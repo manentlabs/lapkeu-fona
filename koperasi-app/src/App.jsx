@@ -26,7 +26,7 @@ import TransaksiIndexPage from "./pages/bendahara/TransaksiIndexPage";
 import KalkulatorPajakPage from "./pages/bendahara/KalkulatorPajakPage";
 import NeracaPage from "./pages/bendahara/NeracaPage";
 import ArusKasPage from "./pages/bendahara/ArusKasPage";
-import LaporanPhuPage from "./pages/bendahara/LaporanPhuPage";
+import LaporanPhuPage from "./pages/bendahara/LaporanPHUPage";
 import PerubahanModalPage from "./pages/bendahara/PerubahanModalPage";
 import CatatanKeuanganPage from "./pages/bendahara/CatatanKeuanganPage";
 import AnalisaKeuanganPage from "./pages/bendahara/AnalisaKeuanganPage";
