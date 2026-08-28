@@ -496,14 +496,24 @@ app.get("/api/health", (req, res) => {
 });
 
 // ============================================================
-// 404 HANDLER
+// 404 HANDLER (khusus untuk /api yang tidak ditemukan)
 // ============================================================
 
-app.use((req, res) => {
+app.use("/api", (req, res) => {
   res.status(404).json({
     message: "Endpoint tidak ditemukan",
     path: req.originalUrl,
   });
+});
+
+// ============================================================
+// SERVE FRONTEND (hasil build Vite)
+// ============================================================
+
+app.use(express.static(path.join(__dirname, "..", "public")));
+
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "index.html"));
 });
 
 // ============================================================
