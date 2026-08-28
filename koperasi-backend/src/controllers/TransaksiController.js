@@ -19,7 +19,7 @@ const fs = require("fs");
 const path = require("path");
 const PengaturanWebsite = require("../models/PengaturanWebsite");
 const PenjualanDetail = require("../models/PenjualanDetail");
-const { hapusJejakPenjualan } = require("../services/penjualanService");
+const { hapusJejakPenjualan } = require("../services/PenjualanService");
 const KODE_REF = require("../config/kodeReferensi");
 const User = require("../models/User");
 
