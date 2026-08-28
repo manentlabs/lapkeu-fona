@@ -403,7 +403,7 @@ const {
   hapusJejakPenjualan,
   prosesItemPenjualan,
   simpanDetailDanJurnalPenjualan,
-} = require('../services/penjualanService');
+} = require('../services/PenjualanService');
 
 exports.penjualan = async (req, res) => {
   const t = await sequelize.transaction();
