@@ -144,11 +144,13 @@ Role.hasMany(User, {
 // ─── User & Anggota ──────────────────────────────────────
 User.belongsTo(Anggota, {
   foreignKey: "anggota_id",
+  targetKey: "no_anggota", // <-- Tambahkan ini
   as: "anggota",
 });
 
 Anggota.hasOne(User, {
   foreignKey: "anggota_id",
+  sourceKey: "no_anggota", // <-- Tambahkan ini
   as: "user",
 });
 
