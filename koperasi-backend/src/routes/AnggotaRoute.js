@@ -14,6 +14,7 @@ router.get("/summary", AnggotaController.summary);
 router.get("/export/excel", AnggotaController.exportExcel);
 router.get("/export/pdf", AnggotaController.exportPdf);
 router.get("/autocomplete", AnggotaController.autocomplete);
+router.get("/autocomplete/instansi", AnggotaController.autocompleteInstansi);
 
 router.get("/", AnggotaController.index);
 router.get("/:id", AnggotaController.show);

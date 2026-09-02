@@ -1,7 +1,7 @@
 // controllers/AnggotaController.js
 const fs = require("fs");
 const path = require("path");
-const { Op } = require("sequelize");
+const { Op, fn, col } = require("sequelize");
 const ExcelJS = require("exceljs");
 const PDFDocument = require("pdfkit");
 const Anggota = require("../models/Anggota");
@@ -274,7 +274,7 @@ exports.autocompleteInstansi = async (req, res) => {
 
     // Ambil daftar instansi unik yang mengandung q (case insensitive)
     const instansiList = await Anggota.findAll({
-      attributes: [[sequelize.fn("DISTINCT", sequelize.col("instansi")), "instansi"]],
+      attributes: [[fn("DISTINCT", col("instansi")), "instansi"]],
       where: {
         instansi: { [Op.like]: `%${q}%` },
       },
