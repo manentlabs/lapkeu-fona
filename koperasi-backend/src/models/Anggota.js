@@ -1,3 +1,4 @@
+// models/Anggota.js
 const { DataTypes } = require("sequelize");
 const sequelize = require("../config/database");
 
@@ -12,16 +13,13 @@ const Anggota = sequelize.define(
     alamat: { type: DataTypes.TEXT, allowNull: true },
     desa: { type: DataTypes.STRING(255), allowNull: true },
     kecamatan: { type: DataTypes.STRING(255), allowNull: true },
+    instansi: { type: DataTypes.STRING(255), allowNull: true }, // ← tambahan
     no_hp: { type: DataTypes.STRING(255), allowNull: true },
     tanggal_gabung: { type: DataTypes.DATEONLY, allowNull: false },
     tanggal_keluar: { type: DataTypes.DATEONLY, allowNull: true },
     status: { type: DataTypes.ENUM("aktif", "nonaktif"), allowNull: false, defaultValue: "aktif" },
   },
-  {
-    tableName: "anggota",
-    timestamps: true,
-    underscored: true,
-  }
+  { tableName: "anggota", timestamps: true, underscored: true }
 );
 
 module.exports = Anggota;

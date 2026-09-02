@@ -1,3 +1,4 @@
+// controllers/AnggotaController.js
 const fs = require("fs");
 const path = require("path");
 const { Op } = require("sequelize");
@@ -5,11 +6,12 @@ const ExcelJS = require("exceljs");
 const PDFDocument = require("pdfkit");
 const Anggota = require("../models/Anggota");
 const User = require("../models/User");
-const PengaturanWebsite = require('../models/PengaturanWebsite');
-const QRCode = require('qrcode');
+const PengaturanWebsite = require("../models/PengaturanWebsite");
+const QRCode = require("qrcode");
 
+// ─── Filter builder (tambah instansi) ───
 function buildFilter(query) {
-  const { search, status, kecamatan, desa, gabung_dari, gabung_sampai } = query;
+  const { search, status, kecamatan, desa, gabung_dari, gabung_sampai, instansi } = query;
   const where = {};
 
   if (search) {
@@ -21,6 +23,7 @@ function buildFilter(query) {
   if (status && ["aktif", "nonaktif"].includes(status)) where.status = status;
   if (kecamatan) where.kecamatan = kecamatan;
   if (desa) where.desa = desa;
+  if (instansi) where.instansi = { [Op.like]: `%${instansi}%` };
   if (gabung_dari || gabung_sampai) {
     where.tanggal_gabung = {};
     if (gabung_dari) where.tanggal_gabung[Op.gte] = gabung_dari;
@@ -29,7 +32,7 @@ function buildFilter(query) {
   return where;
 }
 
-// Ubah path fisik file jadi URL yang bisa diakses frontend
+// ─── Helper foto URL ───
 function withFotoUrl(anggota, req) {
   const json = anggota.toJSON ? anggota.toJSON() : anggota;
   json.foto_url = json.foto
@@ -38,6 +41,7 @@ function withFotoUrl(anggota, req) {
   return json;
 }
 
+// ─── INDEX (daftar anggota) ───
 exports.index = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -54,7 +58,9 @@ exports.index = async (req, res) => {
     return res.json({
       data: rows.map((r) => withFotoUrl(r, req)),
       pagination: {
-        page, per_page: perPage, total: count,
+        page,
+        per_page: perPage,
+        total: count,
         total_pages: Math.ceil(count / perPage),
       },
     });
@@ -64,6 +70,7 @@ exports.index = async (req, res) => {
   }
 };
 
+// ─── SUMMARY ───
 exports.summary = async (req, res) => {
   try {
     const where = buildFilter(req.query);
@@ -92,18 +99,28 @@ exports.summary = async (req, res) => {
   }
 };
 
+// ─── SHOW (detail) ───
 exports.show = async (req, res) => {
   const anggota = await Anggota.findByPk(req.params.id);
   if (!anggota) return res.status(404).json({ message: "Anggota tidak ditemukan." });
   return res.json({ data: withFotoUrl(anggota, req) });
 };
 
-// POST /api/anggota  (multipart/form-data, field foto = "foto")
+// ─── STORE (tambah) ───
 exports.store = async (req, res) => {
   try {
     const {
-      no_anggota, nama, jenis_kelamin, alamat, desa, kecamatan,
-      no_hp, tanggal_gabung, tanggal_keluar, status,
+      instansi,
+      no_anggota,
+      nama,
+      jenis_kelamin,
+      alamat,
+      desa,
+      kecamatan,
+      no_hp,
+      tanggal_gabung,
+      tanggal_keluar,
+      status,
     } = req.body;
 
     if (!no_anggota || !nama || !tanggal_gabung) {
@@ -118,11 +135,17 @@ exports.store = async (req, res) => {
     }
 
     const anggota = await Anggota.create({
-      no_anggota, nama,
+      instansi: instansi || null,
+      no_anggota,
+      nama,
       jenis_kelamin: jenis_kelamin || "L",
       foto: req.file ? req.file.filename : null,
-      alamat, desa, kecamatan, no_hp,
-      tanggal_gabung, tanggal_keluar: tanggal_keluar || null,
+      alamat,
+      desa,
+      kecamatan,
+      no_hp,
+      tanggal_gabung,
+      tanggal_keluar: tanggal_keluar || null,
       status: status || "aktif",
     });
 
@@ -133,7 +156,7 @@ exports.store = async (req, res) => {
   }
 };
 
-// PUT /api/anggota/:id  (multipart/form-data jika ganti foto)
+// ─── UPDATE ───
 exports.update = async (req, res) => {
   try {
     const anggota = await Anggota.findByPk(req.params.id);
@@ -143,8 +166,17 @@ exports.update = async (req, res) => {
     }
 
     const {
-      no_anggota, nama, jenis_kelamin, alamat, desa, kecamatan,
-      no_hp, tanggal_gabung, tanggal_keluar, status,
+      instansi,
+      no_anggota,
+      nama,
+      jenis_kelamin,
+      alamat,
+      desa,
+      kecamatan,
+      no_hp,
+      tanggal_gabung,
+      tanggal_keluar,
+      status,
     } = req.body;
 
     if (no_anggota && no_anggota !== anggota.no_anggota) {
@@ -156,11 +188,19 @@ exports.update = async (req, res) => {
     }
 
     const dataUpdate = {
-      no_anggota, nama, jenis_kelamin, alamat, desa, kecamatan,
-      no_hp, tanggal_gabung, tanggal_keluar: tanggal_keluar || null, status,
+      instansi: instansi || null,
+      no_anggota,
+      nama,
+      jenis_kelamin,
+      alamat,
+      desa,
+      kecamatan,
+      no_hp,
+      tanggal_gabung,
+      tanggal_keluar: tanggal_keluar || null,
+      status,
     };
 
-    // Kalau ada foto baru, hapus foto lama & pakai yang baru
     if (req.file) {
       if (anggota.foto) {
         const oldPath = path.join(__dirname, "..", "..", "public", "uploads", "anggota", anggota.foto);
@@ -178,6 +218,7 @@ exports.update = async (req, res) => {
   }
 };
 
+// ─── DESTROY ───
 exports.destroy = async (req, res) => {
   const anggota = await Anggota.findByPk(req.params.id);
   if (!anggota) return res.status(404).json({ message: "Anggota tidak ditemukan." });
@@ -191,6 +232,7 @@ exports.destroy = async (req, res) => {
   return res.json({ message: "Anggota berhasil dihapus." });
 };
 
+// ─── AUTOCOMPLETE ANGGOTA (untuk referensi) ───
 exports.autocomplete = async (req, res) => {
   try {
     const { q, exclude_has_user } = req.query;
@@ -200,17 +242,13 @@ exports.autocomplete = async (req, res) => {
 
     const list = await Anggota.findAll({
       where: {
-        [Op.or]: [
-          { nama: { [Op.like]: `%${q}%` } },
-          { no_anggota: { [Op.like]: `%${q}%` } },
-        ],
+        [Op.or]: [{ nama: { [Op.like]: `%${q}%` } }, { no_anggota: { [Op.like]: `%${q}%` } }],
       },
       include: [{ model: User, as: "user", attributes: ["id"] }],
       limit: 10,
       order: [["nama", "ASC"]],
     });
 
-    // Filter "belum punya user" hanya jika diminta secara eksplisit
     const filtered = exclude_has_user === "1" ? list.filter((a) => !a.user) : list;
 
     res.json({
@@ -226,7 +264,33 @@ exports.autocomplete = async (req, res) => {
   }
 };
 
-// Export Excel — tambah kolom Jenis Kelamin
+// ─── AUTOCOMPLETE INSTANSI (baru) ───
+exports.autocompleteInstansi = async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || q.length < 2) {
+      return res.json({ data: [] });
+    }
+
+    // Ambil daftar instansi unik yang mengandung q (case insensitive)
+    const instansiList = await Anggota.findAll({
+      attributes: [[sequelize.fn("DISTINCT", sequelize.col("instansi")), "instansi"]],
+      where: {
+        instansi: { [Op.like]: `%${q}%` },
+      },
+      order: [["instansi", "ASC"]],
+      limit: 10,
+    });
+
+    const data = instansiList.map((item) => item.instansi).filter(Boolean);
+    res.json({ data });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Gagal mengambil daftar instansi." });
+  }
+};
+
+// ─── EXPORT EXCEL ─── (tambah kolom Instansi)
 exports.exportExcel = async (req, res) => {
   try {
     const where = buildFilter(req.query);
@@ -242,6 +306,7 @@ exports.exportExcel = async (req, res) => {
       { header: "Alamat", key: "alamat", width: 30 },
       { header: "Desa", key: "desa", width: 18 },
       { header: "Kecamatan", key: "kecamatan", width: 18 },
+      { header: "Instansi", key: "instansi", width: 25 }, // ← tambahan
       { header: "No. HP", key: "no_hp", width: 16 },
       { header: "Tgl Gabung", key: "tanggal_gabung", width: 14 },
       { header: "Tgl Keluar", key: "tanggal_keluar", width: 14 },
@@ -257,6 +322,7 @@ exports.exportExcel = async (req, res) => {
         alamat: a.alamat,
         desa: a.desa,
         kecamatan: a.kecamatan,
+        instansi: a.instansi || "-",
         no_hp: a.no_hp,
         tanggal_gabung: a.tanggal_gabung,
         tanggal_keluar: a.tanggal_keluar || "-",
@@ -264,7 +330,10 @@ exports.exportExcel = async (req, res) => {
       });
     });
 
-    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
     res.setHeader("Content-Disposition", "attachment; filename=data-anggota.xlsx");
     await workbook.xlsx.write(res);
     res.end();
@@ -274,7 +343,7 @@ exports.exportExcel = async (req, res) => {
   }
 };
 
-// Export PDF — tambah kolom Jenis Kelamin
+// ─── EXPORT PDF ─── (tambah kolom Instansi)
 exports.exportPdf = async (req, res) => {
   try {
     const where = buildFilter(req.query);
@@ -288,8 +357,19 @@ exports.exportPdf = async (req, res) => {
     doc.fontSize(14).text("Data Anggota Koperasi Mitra Husada Sejahtera", { align: "center" });
     doc.moveDown(1);
 
-    const headers = ["No. Anggota", "Nama", "JK", "Desa", "Kecamatan", "No. HP", "Gabung", "Keluar", "Status"];
-    const colWidths = [75, 100, 25, 80, 80, 70, 65, 65, 55];
+    const headers = [
+      "No. Anggota",
+      "Nama",
+      "JK",
+      "Desa",
+      "Kecamatan",
+      "Instansi", // ← tambahan
+      "No. HP",
+      "Gabung",
+      "Keluar",
+      "Status",
+    ];
+    const colWidths = [75, 100, 25, 80, 80, 80, 70, 65, 65, 55];
     let y = doc.y;
     const startX = 30;
 
@@ -307,8 +387,16 @@ exports.exportPdf = async (req, res) => {
     data.forEach((a) => {
       x = startX;
       const row = [
-        a.no_anggota, a.nama, a.jenis_kelamin, a.desa || "-", a.kecamatan || "-",
-        a.no_hp || "-", a.tanggal_gabung, a.tanggal_keluar || "-", a.status,
+        a.no_anggota,
+        a.nama,
+        a.jenis_kelamin === "L" ? "L" : "P",
+        a.desa || "-",
+        a.kecamatan || "-",
+        a.instansi || "-", // ← tambahan
+        a.no_hp || "-",
+        a.tanggal_gabung,
+        a.tanggal_keluar || "-",
+        a.status,
       ];
       row.forEach((val, i) => {
         doc.text(String(val), x, y, { width: colWidths[i] });
@@ -328,51 +416,52 @@ exports.exportPdf = async (req, res) => {
   }
 };
 
-// ─── CETAK KARTU ANGGOTA (VERSI RAPI) ─────────────────────
+// ─── CETAK KARTU ANGGOTA (tambah instansi jika diperlukan) ───
 exports.cetakKartu = async (req, res) => {
   try {
     const userId = req.userId;
     const user = await User.findByPk(userId, {
-      include: [{ model: Anggota, as: 'anggota' }]
+      include: [{ model: Anggota, as: "anggota" }],
     });
 
     if (!user || !user.anggota) {
-      return res.status(404).json({ message: 'Anggota tidak ditemukan' });
+      return res.status(404).json({ message: "Anggota tidak ditemukan" });
     }
 
     const anggota = user.anggota;
     const pengaturan = await PengaturanWebsite.findOne();
 
-    // ── QR Code ──
+    // QR Code
     const qrData = JSON.stringify({
       no_anggota: anggota.no_anggota,
-      nama: anggota.nama
+      nama: anggota.nama,
     });
     const qrBuffer = await QRCode.toBuffer(qrData, {
       width: 120,
       margin: 1,
-      color: { dark: '#000000', light: '#ffffff' }
+      color: { dark: "#000000", light: "#ffffff" },
     });
 
-    // ── PDF ──
+    // PDF
     const doc = new PDFDocument({
-      size: [380, 240], // ukuran kartu
-      margin: 12
+      size: [380, 240],
+      margin: 12,
     });
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="kartu-anggota-${anggota.no_anggota}.pdf"`);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="kartu-anggota-${anggota.no_anggota}.pdf"`
+    );
     doc.pipe(res);
 
-    // ── Background ──
-    doc.rect(0, 0, 380, 240).fill('#f8fafc');
+    // Background
+    doc.rect(0, 0, 380, 240).fill("#f8fafc");
+    doc.rect(5, 5, 370, 230).stroke("#e2e8f0");
 
-    // ── Border ──
-    doc.rect(5, 5, 370, 230).stroke('#e2e8f0');
-
-    // ── Logo ──
+    // Logo
     const logoPath = pengaturan?.logo_koperasi
-      ? path.join(__dirname, '..', '..', 'public', 'uploads', 'pengaturan', pengaturan.logo_koperasi)
+      ? path.join(__dirname, "..", "..", "public", "uploads", "pengaturan", pengaturan.logo_koperasi)
       : null;
 
     let logoWidth = 0;
@@ -385,48 +474,45 @@ exports.cetakKartu = async (req, res) => {
       }
     }
 
-    // ── Header (Nama Koperasi) ──
-    const namaKoperasi = pengaturan?.nama_koperasi || 'KOPERASI';
+    const namaKoperasi = pengaturan?.nama_koperasi || "KOPERASI";
     const startHeaderX = logoWidth > 0 ? 70 : 15;
-    doc.fontSize(11).font('Helvetica-Bold').fillColor('#1e293b');
+    doc.fontSize(11).font("Helvetica-Bold").fillColor("#1e293b");
     if (logoWidth > 0) {
-      doc.text(namaKoperasi, startHeaderX, 14, { width: 230, align: 'left' });
+      doc.text(namaKoperasi, startHeaderX, 14, { width: 230, align: "left" });
     } else {
-      doc.text(namaKoperasi, startHeaderX, 14, { width: 350, align: 'center' });
+      doc.text(namaKoperasi, startHeaderX, 14, { width: 350, align: "center" });
     }
 
-    doc.fontSize(8).font('Helvetica').fillColor('#64748b');
+    doc.fontSize(8).font("Helvetica").fillColor("#64748b");
     if (logoWidth > 0) {
-      doc.text('Kartu Anggota', startHeaderX, 28, { width: 230, align: 'left' });
+      doc.text("Kartu Anggota", startHeaderX, 28, { width: 230, align: "left" });
     } else {
-      doc.text('Kartu Anggota', startHeaderX, 28, { width: 350, align: 'center' });
+      doc.text("Kartu Anggota", startHeaderX, 28, { width: 350, align: "center" });
     }
 
-    // ── Garis pemisah ──
     const lineY = 52;
-    doc.moveTo(15, lineY).lineTo(365, lineY).stroke('#cbd5e1');
+    doc.moveTo(15, lineY).lineTo(365, lineY).stroke("#cbd5e1");
 
-    // ── Foto ──
+    // Foto
     const fotoPath = anggota.foto
-      ? path.join(__dirname, '..', '..', 'public', 'uploads', 'anggota', anggota.foto)
+      ? path.join(__dirname, "..", "..", "public", "uploads", "anggota", anggota.foto)
       : null;
 
-    let fotoWidth = 70;
-    let fotoHeight = 85;
+    const fotoWidth = 70;
+    const fotoHeight = 85;
     if (fotoPath && fs.existsSync(fotoPath)) {
       try {
         doc.image(fotoPath, 18, 60, { width: fotoWidth, height: fotoHeight, fit: [fotoWidth, fotoHeight] });
       } catch (err) {
-        // fallback
-        doc.rect(18, 60, fotoWidth, fotoHeight).fill('#e2e8f0');
-        doc.fontSize(9).fillColor('#94a3b8').text('Foto', 32, 95, { width: 42, align: 'center' });
+        doc.rect(18, 60, fotoWidth, fotoHeight).fill("#e2e8f0");
+        doc.fontSize(9).fillColor("#94a3b8").text("Foto", 32, 95, { width: 42, align: "center" });
       }
     } else {
-      doc.rect(18, 60, fotoWidth, fotoHeight).fill('#e2e8f0');
-      doc.fontSize(9).fillColor('#94a3b8').text('Foto', 32, 95, { width: 42, align: 'center' });
+      doc.rect(18, 60, fotoWidth, fotoHeight).fill("#e2e8f0");
+      doc.fontSize(9).fillColor("#94a3b8").text("Foto", 32, 95, { width: 42, align: "center" });
     }
 
-    // ── Data Anggota ──
+    // Data Anggota (tambah instansi)
     const dataStartX = 100;
     let dataY = 62;
     const lineHeight = 17;
@@ -434,65 +520,65 @@ exports.cetakKartu = async (req, res) => {
     const valueStartX = dataStartX + labelWidth;
 
     const fields = [
-      { label: 'Nama', value: anggota.nama || '-' },
-      { label: 'No. Anggota', value: anggota.no_anggota || '-' },
-      { label: 'Jenis Kelamin', value: anggota.jenis_kelamin === 'L' ? 'Laki-laki' : 'Perempuan' },
-      { label: 'No. HP', value: anggota.no_hp || '-' },
+      { label: "Nama", value: anggota.nama || "-" },
+      { label: "No. Anggota", value: anggota.no_anggota || "-" },
+      { label: "Jenis Kelamin", value: anggota.jenis_kelamin === "L" ? "Laki-laki" : "Perempuan" },
+      { label: "Instansi", value: anggota.instansi || "-" }, // ← tambahan
+      { label: "No. HP", value: anggota.no_hp || "-" },
     ];
 
     doc.fontSize(9);
     fields.forEach((field) => {
-      // Label
-      doc.font('Helvetica-Bold').fillColor('#334155');
-      doc.text(field.label + ':', dataStartX, dataY, { width: labelWidth - 5, align: 'right' });
+      doc.font("Helvetica-Bold").fillColor("#334155");
+      doc.text(field.label + ":", dataStartX, dataY, { width: labelWidth - 5, align: "right" });
 
-      // Value
-      doc.font('Helvetica').fillColor('#0f172a');
-      doc.text(field.value, valueStartX, dataY, { width: 200, align: 'left' });
+      doc.font("Helvetica").fillColor("#0f172a");
+      doc.text(field.value, valueStartX, dataY, { width: 200, align: "left" });
 
       dataY += lineHeight;
     });
 
-    // ── Alamat (khusus, wrap jika panjang) ──
-    const alamat = `${anggota.alamat || ''}, ${anggota.desa || ''}, Kec. ${anggota.kecamatan || ''}`.replace(/, , /g, ', ').replace(/^, /, '');
+    // Alamat
+    const alamat = `${anggota.alamat || ""}, ${anggota.desa || ""}, Kec. ${anggota.kecamatan || ""}`
+      .replace(/, , /g, ", ")
+      .replace(/^, /, "");
     const alamatY = dataY + 2;
-    doc.font('Helvetica-Bold').fillColor('#334155');
-    doc.text('Alamat:', dataStartX, alamatY, { width: labelWidth - 5, align: 'right' });
+    doc.font("Helvetica-Bold").fillColor("#334155");
+    doc.text("Alamat:", dataStartX, alamatY, { width: labelWidth - 5, align: "right" });
 
-    doc.font('Helvetica').fillColor('#0f172a');
-    doc.text(alamat || '-', valueStartX, alamatY, { width: 190, align: 'left', lineGap: 2 });
+    doc.font("Helvetica").fillColor("#0f172a");
+    doc.text(alamat || "-", valueStartX, alamatY, { width: 190, align: "left", lineGap: 2 });
 
-    // hitung tinggi alamat yang terpakai (kira-kira)
     const alamatLines = Math.ceil(doc.widthOfString(alamat, { width: 190 }) / 190) || 1;
     const alamatHeight = alamatLines * 13;
 
-    // ── QR Code ──
+    // QR Code
     const qrX = 310;
     const qrY = 60;
     doc.image(qrBuffer, qrX, qrY, { width: 60, height: 60 });
 
-    // ── Footer (garis + teks) ──
+    // Footer
     const footerY = Math.max(195, 60 + fotoHeight + 10, 60 + alamatHeight + 10);
     const footerYPos = Math.min(footerY, 210);
 
-    doc.moveTo(15, footerYPos).lineTo(365, footerYPos).stroke('#cbd5e1');
+    doc.moveTo(15, footerYPos).lineTo(365, footerYPos).stroke("#cbd5e1");
 
-    doc.fontSize(7).font('Helvetica').fillColor('#94a3b8');
-    const dateStr = new Date().toLocaleString('id-ID', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
+    doc.fontSize(7).font("Helvetica").fillColor("#94a3b8");
+    const dateStr = new Date().toLocaleString("id-ID", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
     });
     doc.text(`Dicetak: ${dateStr} | Kartu berlaku selama menjadi anggota aktif.`, 15, footerYPos + 6, {
       width: 350,
-      align: 'center'
+      align: "center",
     });
 
     doc.end();
   } catch (error) {
-    console.error('❌ Error cetak kartu:', error);
-    return res.status(500).json({ message: 'Gagal mencetak kartu anggota', error: error.message });
+    console.error("❌ Error cetak kartu:", error);
+    return res.status(500).json({ message: "Gagal mencetak kartu anggota", error: error.message });
   }
 };

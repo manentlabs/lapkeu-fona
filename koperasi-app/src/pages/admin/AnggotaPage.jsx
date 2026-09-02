@@ -22,15 +22,31 @@ import {
   Eye,
   Camera,
   User,
+  Building2, // ← TAMBAHAN INSTANSI (ikon)
 } from "lucide-react";
 
 const emptyForm = {
-  no_anggota: "", nama: "", jenis_kelamin: "L", alamat: "", desa: "", kecamatan: "",
-  no_hp: "", tanggal_gabung: "", tanggal_keluar: "", status: "aktif",
+  no_anggota: "",
+  nama: "",
+  jenis_kelamin: "L",
+  alamat: "",
+  desa: "",
+  kecamatan: "",
+  instansi: "", // ← TAMBAHAN INSTANSI
+  no_hp: "",
+  tanggal_gabung: "",
+  tanggal_keluar: "",
+  status: "aktif",
 };
 
 const emptyFilters = {
-  search: "", status: "", kecamatan: "", desa: "", gabung_dari: "", gabung_sampai: "",
+  search: "",
+  status: "",
+  kecamatan: "",
+  desa: "",
+  gabung_dari: "",
+  gabung_sampai: "",
+  instansi: "", // ← TAMBAHAN INSTANSI
 };
 
 export default function AnggotaPage() {
@@ -121,6 +137,7 @@ export default function AnggotaPage() {
       alamat: item.alamat || "",
       desa: item.desa || "",
       kecamatan: item.kecamatan || "",
+      instansi: item.instansi || "", // ← TAMBAHAN INSTANSI
       no_hp: item.no_hp || "",
       tanggal_gabung: item.tanggal_gabung?.slice(0, 10) || "",
       tanggal_keluar: item.tanggal_keluar?.slice(0, 10) || "",
@@ -193,7 +210,7 @@ export default function AnggotaPage() {
     }
   };
 
-  // Fetcher untuk autocomplete — dipakai baik di form filter maupun form tambah/edit
+  // Fetcher untuk autocomplete
   const fetchKecamatanSuggestions = async (q) => {
     const { data } = await api.get("/wilayah/kecamatan", { params: { q } });
     return data.data;
@@ -201,6 +218,13 @@ export default function AnggotaPage() {
   const fetchDesaSuggestions = (kecamatanScope) => async (q) => {
     const { data } = await api.get("/wilayah/desa", { params: { q, kecamatan: kecamatanScope } });
     return data.data;
+  };
+
+  // ← TAMBAHAN INSTANSI: fetcher autocomplete instansi
+  const fetchInstansiSuggestions = async (q) => {
+    if (!q || q.length < 2) return [];
+    const { data } = await api.get("/anggota/autocomplete/instansi", { params: { q } });
+    return data.data; // array string
   };
 
   return (
@@ -220,7 +244,7 @@ export default function AnggotaPage() {
           </button>
         </div>
 
-        {/* Kartu ringkasan — mengikuti filter aktif */}
+        {/* Kartu ringkasan */}
         <div className={`grid grid-cols-2 gap-4 lg:grid-cols-4 transition-opacity ${summaryLoading ? "opacity-50" : "opacity-100"}`}>
           <SummaryCard label="Total Anggota" value={summary?.total_anggota ?? "-"} color="blue" />
           <SummaryCard label="Anggota Aktif" value={summary?.anggota_aktif ?? "-"} color="green" />
@@ -283,7 +307,7 @@ export default function AnggotaPage() {
                     value={filters.kecamatan}
                     onChange={(v) => {
                       handleFilterChange("kecamatan", v);
-                      handleFilterChange("desa", ""); // reset desa kalau kecamatan berubah
+                      handleFilterChange("desa", "");
                     }}
                     fetchSuggestions={fetchKecamatanSuggestions}
                     placeholder="Ketik kecamatan…"
@@ -295,6 +319,15 @@ export default function AnggotaPage() {
                     onChange={(v) => handleFilterChange("desa", v)}
                     fetchSuggestions={fetchDesaSuggestions(filters.kecamatan)}
                     placeholder="Ketik desa…"
+                  />
+
+                  {/* ← TAMBAHAN INSTANSI: filter instansi */}
+                  <AutocompleteInput
+                    label="Instansi"
+                    value={filters.instansi}
+                    onChange={(v) => handleFilterChange("instansi", v)}
+                    fetchSuggestions={fetchInstansiSuggestions}
+                    placeholder="Ketik instansi…"
                   />
 
                   <div>
@@ -379,6 +412,7 @@ export default function AnggotaPage() {
                 <th className="px-4 py-3">No. Anggota</th>
                 <th className="px-4 py-3">Nama</th>
                 <th className="px-4 py-3">Desa / Kecamatan</th>
+                <th className="px-4 py-3">Instansi</th> {/* ← TAMBAHAN INSTANSI */}
                 <th className="px-4 py-3">No. HP</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right">Aksi</th>
@@ -403,6 +437,7 @@ export default function AnggotaPage() {
                   <td className="px-4 py-3">{item.no_anggota}</td>
                   <td className="px-4 py-3 font-medium">{item.nama}</td>
                   <td className="px-4 py-3">{item.desa || "-"}, {item.kecamatan || "-"}</td>
+                  <td className="px-4 py-3">{item.instansi || "-"}</td> {/* ← TAMBAHAN INSTANSI */}
                   <td className="px-4 py-3">{item.no_hp || "-"}</td>
                   <td className="px-4 py-3"><StatusBadge status={item.status} /></td>
                   <td className="px-4 py-3">
@@ -467,6 +502,11 @@ export default function AnggotaPage() {
                 <p className="flex items-center gap-2">
                   <MapPin size={14} className="shrink-0 text-gray-400" />
                   {item.desa || "-"}, {item.kecamatan || "-"}
+                </p>
+                {/* ← TAMBAHAN INSTANSI */}
+                <p className="flex items-center gap-2">
+                  <Building2 size={14} className="shrink-0 text-gray-400" />
+                  {item.instansi || "-"}
                 </p>
                 <p className="flex items-center gap-2">
                   <Phone size={14} className="shrink-0 text-gray-400" />
@@ -605,7 +645,6 @@ export default function AnggotaPage() {
                 <Field label="No. Anggota" value={form.no_anggota} onChange={(v) => setForm({ ...form, no_anggota: v })} full />
                 <Field label="Nama" value={form.nama} onChange={(v) => setForm({ ...form, nama: v })} full />
 
-                {/* Jenis Kelamin */}
                 <div>
                   <label className="mb-1 block text-sm text-gray-700">Jenis Kelamin</label>
                   <select
@@ -636,6 +675,17 @@ export default function AnggotaPage() {
                   fetchSuggestions={fetchDesaSuggestions(form.kecamatan)}
                   placeholder="Ketik desa…"
                 />
+
+                {/* ← TAMBAHAN INSTANSI: input instansi dengan autocomplete */}
+                <div className="sm:col-span-2">
+                  <AutocompleteInput
+                    label="Instansi"
+                    value={form.instansi}
+                    onChange={(v) => setForm({ ...form, instansi: v })}
+                    fetchSuggestions={fetchInstansiSuggestions}
+                    placeholder="Ketik instansi…"
+                  />
+                </div>
 
                 <div>
                   <label className="mb-1 block text-sm text-gray-700">Status</label>
@@ -691,7 +741,6 @@ export default function AnggotaPage() {
 
           <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
             <div className="mx-auto max-w-2xl">
-
               {/* Foto */}
               <div className="mb-6">
                 <label className="mb-1 block text-sm text-gray-700">
@@ -714,7 +763,6 @@ export default function AnggotaPage() {
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-
                 <Field
                   label="No. Anggota"
                   value={detailItem.no_anggota}
@@ -769,6 +817,14 @@ export default function AnggotaPage() {
                   readOnly
                 />
 
+                {/* ← TAMBAHAN INSTANSI */}
+                <Field
+                  label="Instansi"
+                  value={detailItem.instansi || "-"}
+                  readOnly
+                  full
+                />
+
                 <Field
                   label="Status"
                   value={detailItem.status}
@@ -786,7 +842,6 @@ export default function AnggotaPage() {
                   value={detailItem.tanggal_keluar?.slice(0, 10) || "-"}
                   readOnly
                 />
-
               </div>
             </div>
           </div>

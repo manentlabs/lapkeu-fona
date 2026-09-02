@@ -3,8 +3,6 @@ const { Pinjaman, Anggota, User, sequelize } = require("../models");
 const PotonganGaji = require("../models/PotonganGaji");
 const ExcelJS = require("exceljs");
 
-console.log("📦 Controller Pinjaman dimuat");
-
 class PinjamanController {
   // ─────────────────────────────────────────────────────────────
   // 1. INDEX VERIFIKASI (dengan filter status)
