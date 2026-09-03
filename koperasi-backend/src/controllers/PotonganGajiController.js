@@ -776,3 +776,111 @@ exports.batchStore = async (req, res) => {
     return res.status(500).json({ message: "Gagal menyimpan potongan per instansi." });
   }
 };
+
+// ─── Export Excel ─────────────────────────────────────────────
+exports.exportExcel = async (req, res) => {
+  try {
+    const { bulan, tahun, instansi } = req.query;
+    const where = {};
+    if (bulan) where.bulan = bulan;
+    if (tahun) where.tahun = tahun;
+
+    const includeAnggota = {
+      model: Anggota,
+      as: "anggota",
+      attributes: ["id", "no_anggota", "nama", "instansi"],
+    };
+    if (instansi) {
+      includeAnggota.where = { instansi };
+    }
+
+    const data = await PotonganGaji.findAll({
+      where,
+      include: [includeAnggota],
+      order: [["tahun", "DESC"], ["bulan", "DESC"], ["no_urut", "ASC"]],
+    });
+
+    if (data.length === 0) {
+      return res.status(422).json({ message: "Tidak ada data potongan untuk diekspor." });
+    }
+
+    const ExcelJS = require("exceljs");
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Potongan Gaji");
+
+    const fieldConfig = [
+      { key: "simpanan_wajib", label: "Simpanan Wajib" },
+      { key: "simpanan_sukarela", label: "Simpanan Sukarela" },
+      { key: "utang_barang_pokok", label: "Utang Barang Pokok" },
+      { key: "utang_barang_jasa", label: "Utang Barang Jasa" },
+      { key: "utang_uang_menengah_pokok", label: "Utang Uang Menengah Pokok" },
+      { key: "utang_uang_menengah_jasa", label: "Utang Uang Menengah Jasa" },
+      { key: "utang_uang_pendek_pokok", label: "Utang Uang Pendek Pokok" },
+      { key: "utang_uang_pendek_jasa", label: "Utang Uang Pendek Jasa" },
+      { key: "simpanan_pokok", label: "Simpanan Pokok" },
+    ];
+
+    const columns = [
+      { header: "No", key: "no", width: 8 },
+      { header: "No Anggota", key: "no_anggota", width: 15 },
+      { header: "Nama", key: "nama", width: 30 },
+      { header: "Instansi", key: "instansi", width: 25 },
+      { header: "Bulan", key: "bulan", width: 15 },
+      { header: "Tahun", key: "tahun", width: 10 },
+      { header: "Sumber", key: "sumber", width: 15 },
+      { header: "Keterangan", key: "keterangan", width: 30 },
+      ...fieldConfig.map((f) => ({ header: f.label, key: f.key, width: 20 })),
+      { header: "Total", key: "total", width: 18 },
+      { header: "Status", key: "status", width: 15 },
+    ];
+
+    sheet.columns = columns;
+    sheet.getRow(1).font = { bold: true };
+    sheet.getRow(1).alignment = { horizontal: "center" };
+
+    data.forEach((item, idx) => {
+      const rowData = {
+        no: idx + 1,
+        no_anggota: item.anggota?.no_anggota || "-",
+        nama: item.anggota?.nama || "-",
+        instansi: item.anggota?.instansi || "-",
+        bulan: item.bulan,
+        tahun: item.tahun,
+        sumber: item.sumber === "pinjaman" ? "Otomatis" : "Manual",
+        keterangan: item.keterangan || "",
+        total: parseFloat(item.total) || 0,
+        status: item.is_processed ? "Diproses" : "Belum",
+      };
+      fieldConfig.forEach(({ key }) => {
+        rowData[key] = parseFloat(item[key]) || 0;
+      });
+      sheet.addRow(rowData);
+    });
+
+    const numberKeys = ["total", ...fieldConfig.map((f) => f.key)];
+    sheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      numberKeys.forEach((key) => {
+        const cell = row.getCell(key);
+        if (cell) {
+          cell.alignment = { horizontal: "right" };
+          cell.numFmt = "#,##0";
+        }
+      });
+    });
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=potongan-gaji-${Date.now()}.xlsx`
+    );
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    console.error("❌ Export Excel error:", error);
+    res.status(500).json({ message: "Gagal mengekspor Excel." });
+  }
+};

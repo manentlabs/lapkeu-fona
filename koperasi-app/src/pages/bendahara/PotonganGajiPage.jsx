@@ -28,7 +28,6 @@ import {
 } from "lucide-react";
 
 const emptyFilters = { bulan: "", tahun: "" };
-
 const BULAN_LIST = [
   "Januari", "Februari", "Maret", "April", "Mei", "Juni",
   "Juli", "Agustus", "September", "Oktober", "November", "Desember",
@@ -40,8 +39,6 @@ function formatRupiah(value) {
 }
 
 // ─── Sumber Kebenaran Tunggal untuk Field Potongan ─────────────
-// Dipakai bersama oleh: form manual, modal detail, dan tabel batch per instansi.
-// Kalau ada field baru dari backend, cukup tambahkan satu baris di sini saja.
 const FIELD_CONFIG = [
   { key: "simpanan_wajib", label: "Simpanan Wajib" },
   { key: "simpanan_sukarela", label: "Simpanan Sukarela" },
@@ -77,6 +74,10 @@ export default function PotonganGajiPage() {
   const [filters, setFilters] = useState(emptyFilters);
   const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
   const [filterOpen, setFilterOpen] = useState(true);
+
+  // State untuk filter export
+  const [exportInstansi, setExportInstansi] = useState("");
+  const [instansiExportOptions, setInstansiExportOptions] = useState([]);
 
   // Modal form (tambah/edit manual per-anggota)
   const [modalOpen, setModalOpen] = useState(false);
@@ -129,16 +130,23 @@ export default function PotonganGajiPage() {
     }
   }, []);
 
+  // ─── Fetch daftar instansi untuk dropdown export ────────────
+  const fetchInstansiOptions = useCallback(async () => {
+    try {
+      const { data } = await api.get("/potongan-gaji/instansi");
+      setInstansiOptions(data.data || []);
+      setInstansiExportOptions(data.data || []);
+    } catch (err) {
+      console.error(err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchData(1, emptyFilters);
-  }, [fetchData]);
+    fetchInstansiOptions();
+  }, [fetchData, fetchInstansiOptions]);
 
   // ─── Ringkasan turunan ──────────────────────────────────────
-  // Catatan: nilai berikut dihitung dari DATA HALAMAN AKTIF SAJA (bukan seluruh
-  // data yang difilter), karena backend belum menyediakan agregat anggota unik
-  // / status per filter. Label kartu sengaja ditulis eksplisit "Halaman Ini"
-  // supaya tidak menyesatkan bendahara. Untuk total keseluruhan per bulan,
-  // lihat panel ringkasan bulanan (memakai `summary` dari server).
   const totalHalaman = data.reduce((s, i) => s + (parseFloat(i.total) || 0), 0);
   const diprosesHalaman = data.filter((i) => i.is_processed).length;
   const anggotaUnikHalaman = new Set(data.map((i) => i.anggota_id)).size;
@@ -256,7 +264,7 @@ export default function PotonganGajiPage() {
     }
   };
 
-  // ─── Proses Semua ke Jurnal (untuk bulan/tahun yang difilter) ─
+  // ─── Proses Semua ke Jurnal ────────────────────────────────
   const handleProcessAll = async () => {
     if (!appliedFilters.bulan || !appliedFilters.tahun) {
       alert("Terapkan filter Bulan & Tahun terlebih dahulu (di panel Filter & Export).");
@@ -299,10 +307,11 @@ export default function PotonganGajiPage() {
     setExporting(true);
     try {
       const params = {};
-      if (appliedFilters.bulan) params.bulan = `${appliedFilters.bulan} ${appliedFilters.tahun || new Date().getFullYear()}`;
+      if (appliedFilters.bulan) params.bulan = appliedFilters.bulan;
       if (appliedFilters.tahun) params.tahun = appliedFilters.tahun;
+      if (exportInstansi) params.instansi = exportInstansi;
 
-      const response = await api.get("/pinjaman/export-potongan-gaji", {
+      const response = await api.get("/potongan-gaji/export-excel", {
         params,
         responseType: "blob",
       });
@@ -338,16 +347,7 @@ export default function PotonganGajiPage() {
     }
   };
 
-  // ─── Input per Instansi (batch) ──────────────────────────────
-  const fetchInstansiOptions = useCallback(async () => {
-    try {
-      const { data } = await api.get("/potongan-gaji/instansi");
-      setInstansiOptions(data.data || []);
-    } catch (err) {
-      console.error(err);
-    }
-  }, []);
-
+  // ─── Input per Instansi (batch) ────────────────────────────
   const openInstansiModal = () => {
     setSelectedInstansi("");
     setInstansiBulan(appliedFilters.bulan || "");
@@ -364,8 +364,6 @@ export default function PotonganGajiPage() {
       setInstansiAnggotaList([]);
       return;
     }
-    // Tandai permintaan ini sebagai yang terbaru; kalau ada permintaan lain
-    // menyusul sebelum yang ini selesai, hasil yang ini akan diabaikan.
     const fetchId = ++instansiFetchIdRef.current;
     setLoadingInstansiAnggota(true);
     setInstansiError("");
@@ -373,7 +371,7 @@ export default function PotonganGajiPage() {
       const { data } = await api.get("/potongan-gaji/anggota-by-instansi", {
         params: { instansi, bulan, tahun },
       });
-      if (fetchId !== instansiFetchIdRef.current) return; // hasil sudah usang, abaikan
+      if (fetchId !== instansiFetchIdRef.current) return;
       setInstansiAnggotaList(data.data || []);
     } catch (err) {
       if (fetchId !== instansiFetchIdRef.current) return;
@@ -400,9 +398,6 @@ export default function PotonganGajiPage() {
     );
   };
 
-  // Isi nilai Simpanan Wajib yang sama untuk semua anggota yang masih bisa diedit
-  // (baris berstatus "Diproses" atau bersumber dari "pinjaman" tetap dilewati,
-  // konsisten dengan aturan kunci baris lainnya di tabel ini).
   const applyBulkSimpananWajib = () => {
     const raw = bulkSimpananWajib.replace(/[^\d]/g, "");
     if (!raw) return;
@@ -522,7 +517,7 @@ export default function PotonganGajiPage() {
           />
         </div>
 
-        {/* Ringkasan Bulanan (dari server, mencakup seluruh data — bukan hanya halaman aktif) */}
+        {/* Ringkasan Bulanan (dari server) */}
         {summary.length > 0 && (
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
             <p className="text-xs font-semibold uppercase text-gray-500 mb-3">Total Potongan per Bulan</p>
@@ -597,10 +592,25 @@ export default function PotonganGajiPage() {
                     </button>
                   </div>
                 </div>
-                <div className="bg-white rounded-lg p-4 border space-y-2">
+
+                {/* ─── Panel Export Excel ──────────────────── */}
+                <div className="bg-white rounded-lg p-4 border space-y-3">
                   <p className="text-xs font-semibold uppercase text-gray-500 flex items-center gap-2 mb-1">
                     <FileSpreadsheet size={14} className="text-green-600" /> Excel
                   </p>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Filter Instansi (Opsional)</label>
+                    <select
+                      value={exportInstansi}
+                      onChange={(e) => setExportInstansi(e.target.value)}
+                      className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-green-500"
+                    >
+                      <option value="">Semua Instansi</option>
+                      {instansiExportOptions.map((instansi) => (
+                        <option key={instansi} value={instansi}>{instansi}</option>
+                      ))}
+                    </select>
+                  </div>
                   <button
                     onClick={handleExportExcel}
                     disabled={exporting}
@@ -610,7 +620,7 @@ export default function PotonganGajiPage() {
                     Export Excel
                   </button>
                   <p className="text-xs text-gray-400 flex items-center gap-1">
-                    <AlertCircle size={12} /> Export mengikuti filter bulan/tahun di atas.
+                    <AlertCircle size={12} /> Export mengikuti filter bulan/tahun & instansi di atas.
                   </p>
                 </div>
               </div>
@@ -1254,7 +1264,6 @@ export default function PotonganGajiPage() {
           </div>
         </div>
       )}
-
     </DashboardLayout>
   );
 }
@@ -1268,8 +1277,6 @@ function AnggotaSearchInput({ selected, onSelect }) {
   const timeoutRef = useRef(null);
   const requestIdRef = useRef(0);
 
-  // Bersihkan timeout yang masih tertunda kalau komponen ini di-unmount
-  // (misal modal ditutup saat user masih mengetik).
   useEffect(() => {
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -1292,7 +1299,7 @@ function AnggotaSearchInput({ selected, onSelect }) {
         const { data } = await api.get("/anggota", {
           params: { search: val, status: "aktif", per_page: 8 },
         });
-        if (requestId !== requestIdRef.current) return; // hasil sudah usang, abaikan
+        if (requestId !== requestIdRef.current) return;
         setOptions(data.data || []);
         setOpen(true);
       } finally {
@@ -1367,8 +1374,6 @@ function AnggotaSearchInput({ selected, onSelect }) {
 function PaginationControls({ pagination, onGoToPage }) {
   const { page, total_pages } = pagination;
 
-  // Batasi jumlah tombol yang dirender: halaman pertama, terakhir, dan
-  // beberapa halaman di sekitar halaman aktif — dengan elipsis di antaranya.
   const pages = [];
   const windowSize = 1;
   for (let p = 1; p <= total_pages; p++) {

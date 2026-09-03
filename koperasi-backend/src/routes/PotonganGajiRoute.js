@@ -14,5 +14,6 @@ router.post("/batch", PotonganGajiController.batchStore);
 router.put("/:id", PotonganGajiController.update);
 router.post("/:id/process", PotonganGajiController.processToJurnal);
 router.delete("/:id", PotonganGajiController.destroy);
+router.get("/export-excel", PotonganGajiController.exportExcel);
 
 module.exports = router;
