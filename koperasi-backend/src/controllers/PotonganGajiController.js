@@ -249,11 +249,6 @@ exports.update = async (req, res) => {
   }
 };
 
-// ─── Mapping field potongan -> kode akun kredit ────────────────
-// Skema akrual: jasa/bunga sudah diakui sebagai piutang (1104) + pendapatan
-// (4110) SAAT PINJAMAN DICAIRKAN (lihat PinjamanController.verifikasi ->
-// buildJurnalPencairanPinjaman). Potongan gaji ini hanya MELUNASI piutang
-// tersebut, sehingga TIDAK boleh menyentuh 4110 lagi di sini.
 const KREDIT_MAP = [
   ["simpanan_wajib", "3120", "Simpanan Wajib"],
   ["simpanan_sukarela", "2101", "Simpanan Sukarela"],
@@ -267,16 +262,11 @@ const KREDIT_MAP = [
 ];
 
 async function buildJurnalForPotongan(potongan, userId, t) {
-  // ── Validasi SEMUA akun yang dibutuhkan di awal, sebelum membuat apa pun ──
-  // Ini mencegah kasus jurnal timpang (debit Kas dibuat penuh, tapi sebagian
-  // kredit hilang diam-diam karena akunnya belum ada di master).
+  // ── Validasi akun Kas dan kredit ──
   const akunKas = await Akun.findOne({ where: { kode_akun: "1102" }, transaction: t });
-  if (!akunKas) {
-    throw new Error("Akun Kas Bank (kode 1102) tidak ditemukan.");
-  }
+  if (!akunKas) throw new Error("Akun Kas Bank (kode 1102) tidak ditemukan.");
 
-  // Kumpulkan kode akun unik yang benar-benar dibutuhkan (field bernilai > 0)
-  const neededCodes = new Map(); // kode_akun -> label (untuk pesan error)
+  const neededCodes = new Map();
   for (const [field, kodeAkun, label] of KREDIT_MAP) {
     const nilai = parseFloat(potongan[field]) || 0;
     if (nilai > 0 && !neededCodes.has(kodeAkun)) {
@@ -284,43 +274,43 @@ async function buildJurnalForPotongan(potongan, userId, t) {
     }
   }
 
-  const akunCache = new Map(); // kode_akun -> instance Akun
+  const akunCache = new Map();
   for (const [kodeAkun, label] of neededCodes) {
     const akun = await Akun.findOne({ where: { kode_akun: kodeAkun }, transaction: t });
     if (!akun) {
       throw new Error(
-        `Akun untuk "${label}" (kode ${kodeAkun}) tidak ditemukan di master akun. Proses dibatalkan, tidak ada jurnal yang dibuat.`
+        `Akun untuk "${label}" (kode ${kodeAkun}) tidak ditemukan di master akun.`
       );
     }
     akunCache.set(kodeAkun, akun);
   }
 
-  // ── Kalau ini potongan cicilan pinjaman, validasi & siapkan record   ──
-  // Pinjaman-nya SEBELUM membuat transaksi/jurnal apapun, supaya kalau
-  // pinjaman tidak ditemukan / datanya tidak konsisten, seluruh proses
-  // dibatalkan (tidak ada jurnal setengah jadi).
-  //
-  // Dicocokkan lewat potongan.pinjaman_id (bukan anggota_id + status aktif),
-  // karena satu anggota bisa punya lebih dari satu pinjaman aktif sekaligus
-  // (pinjaman lama yang sudah separuh lunas + pinjaman baru yang baru
-  // disetujui) — kalau dicocokkan lewat anggota_id saja, potongan bisa
-  // salah melunasi pinjaman yang lain.
-  let pinjamanTerkait = null;
-  if (potongan.sumber === "pinjaman") {
-    if (!potongan.pinjaman_id) {
-      throw new Error(
-        `Baris potongan pinjaman ini tidak punya pinjaman_id (kemungkinan dibuat sebelum kolom ini ada). Proses dibatalkan — perbaiki data pinjaman_id-nya dulu sebelum diproses ke jurnal.`
-      );
-    }
-    pinjamanTerkait = await Pinjaman.findByPk(potongan.pinjaman_id, { transaction: t });
-    if (!pinjamanTerkait) {
-      throw new Error(
-        `Pinjaman terkait (id ${potongan.pinjaman_id}) tidak ditemukan. Proses dibatalkan, tidak ada jurnal yang dibuat.`
-      );
+  // ── Kumpulkan akun kredit yang akan digunakan ──
+  const kreditEntries = [];
+  for (const [field, kodeAkun, label] of KREDIT_MAP) {
+    const nilai = parseFloat(potongan[field]) || 0;
+    if (nilai > 0) {
+      const akun = akunCache.get(kodeAkun);
+      kreditEntries.push({ akun, nilai, label });
     }
   }
 
-  // ── Semua akun & pinjaman tervalidasi, baru mulai membuat transaksi & jurnal ──
+  // Tentukan akun kredit pertama
+  const firstKredit = kreditEntries.length > 0 ? kreditEntries[0].akun : null;
+
+  // ── Jika ada pinjaman terkait, validasi dulu ──
+  let pinjamanTerkait = null;
+  if (potongan.sumber === "pinjaman") {
+    if (!potongan.pinjaman_id) {
+      throw new Error("Baris potongan pinjaman tidak punya pinjaman_id.");
+    }
+    pinjamanTerkait = await Pinjaman.findByPk(potongan.pinjaman_id, { transaction: t });
+    if (!pinjamanTerkait) {
+      throw new Error(`Pinjaman terkait (id ${potongan.pinjaman_id}) tidak ditemukan.`);
+    }
+  }
+
+  // ── Ambil referensi ──
   let referensi = await KodeReferensi.findOne({ where: { kode: "POT-001" }, transaction: t });
   if (!referensi) {
     referensi = await KodeReferensi.create(
@@ -329,8 +319,6 @@ async function buildJurnalForPotongan(potongan, userId, t) {
         uraian_transaksi: "Potongan Gaji PKM SUDI",
         label: "Potongan Gaji",
         akun_debet: "Kas Bank",
-        // Kredit tersebar ke beberapa akun tergantung isi potongan (simpanan
-        // & piutang) — lihat detail baris jurnal per transaksi untuk rincian.
         akun_kredit: "Beragam (lihat rincian jurnal)",
       },
       { transaction: t }
@@ -339,6 +327,7 @@ async function buildJurnalForPotongan(potongan, userId, t) {
 
   const noTransaksi = await generateNoTransaksi(t);
 
+  // ── Buat transaksi (dengan akun_kredit_id dan akun gabungan) ──
   const transaksi = await Transaksi.create(
     {
       no_transaksi: noTransaksi,
@@ -349,8 +338,11 @@ async function buildJurnalForPotongan(potongan, userId, t) {
       jumlah: potongan.total,
       akun_id: akunKas.id,
       akun_debet_id: akunKas.id,
-      akun_kredit_id: null,
-      akun: akunKas.nama_akun,
+      akun_kredit_id: firstKredit?.id || null,
+      akun: [
+        akunKas.nama_akun,
+        ...kreditEntries.map(e => e.akun.nama_akun)
+      ].join(", "),
       anggota_id: potongan.anggota_id,
       anggota: potongan.anggota.nama,
       unit_usaha: "Simpan Pinjam",
@@ -359,6 +351,7 @@ async function buildJurnalForPotongan(potongan, userId, t) {
     { transaction: t }
   );
 
+  // ── Jurnal debit ──
   await Jurnal.create(
     {
       transaksi_id: transaksi.id,
@@ -371,29 +364,25 @@ async function buildJurnalForPotongan(potongan, userId, t) {
     { transaction: t }
   );
 
-  for (const [field, kodeAkun, label] of KREDIT_MAP) {
-    const nilai = parseFloat(potongan[field]) || 0;
-    if (nilai > 0) {
-      const akun = akunCache.get(kodeAkun); // sudah divalidasi ada, tidak mungkin null di sini
-      await Jurnal.create(
-        {
-          transaksi_id: transaksi.id,
-          tanggal: new Date(),
-          akun_id: akun.id,
-          debet: 0,
-          kredit: nilai,
-          keterangan: label,
-        },
-        { transaction: t }
-      );
-    }
+  // ── Jurnal kredit ──
+  for (const { akun, nilai, label } of kreditEntries) {
+    await Jurnal.create(
+      {
+        transaksi_id: transaksi.id,
+        tanggal: new Date(),
+        akun_id: akun.id,
+        debet: 0,
+        kredit: nilai,
+        keterangan: label,
+      },
+      { transaction: t }
+    );
   }
 
+  // ── Update status potongan ──
   await potongan.update({ is_processed: true }, { transaction: t });
 
-  // ── Kalau ini cicilan pinjaman: turunkan sisa_angsuran & tandai lunas ──
-  // Berjalan sampai jangka_waktu selesai (sisa_angsuran habis), sesuai
-  // pinjaman.jangka_waktu saat pengajuan.
+  // ── Update pinjaman jika ada ──
   if (pinjamanTerkait) {
     const sisaBaru = (pinjamanTerkait.sisa_angsuran || 0) - 1;
     await pinjamanTerkait.update(
