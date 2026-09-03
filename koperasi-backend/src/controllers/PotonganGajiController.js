@@ -944,63 +944,75 @@ exports.exportPdf = async (req, res) => {
     }
 
     const pengaturan = await PengaturanWebsite.findOne();
-    const fieldConfig = [
-      { key: "simpanan_wajib", label: "Simpanan Wajib" },
-      { key: "simpanan_sukarela", label: "Simpanan Sukarela" },
-      { key: "utang_barang_pokok", label: "Utang Barang Pokok" },
-      { key: "utang_barang_jasa", label: "Utang Barang Jasa" },
-      { key: "utang_uang_menengah_pokok", label: "Utang Uang Menengah Pokok" },
-      { key: "utang_uang_menengah_jasa", label: "Utang Uang Menengah Jasa" },
-      { key: "utang_uang_pendek_pokok", label: "Utang Uang Pendek Pokok" },
-      { key: "utang_uang_pendek_jasa", label: "Utang Uang Pendek Jasa" },
-      { key: "simpanan_pokok", label: "Simpanan Pokok" },
+
+    // ── Siapkan totals ──
+    const fieldKeys = [
+      "simpanan_wajib",
+      "simpanan_sukarela",
+      "utang_barang_pokok",
+      "utang_barang_jasa",
+      "utang_uang_menengah_pokok",
+      "utang_uang_menengah_jasa",
+      "utang_uang_pendek_pokok",
+      "utang_uang_pendek_jasa",
+      "simpanan_pokok"
     ];
 
-    // Siapkan data untuk total per kolom
     const totals = {};
-    fieldConfig.forEach(f => totals[f.key] = 0);
+    fieldKeys.forEach(key => totals[key] = 0);
     let grandTotal = 0;
 
     data.forEach(item => {
-      fieldConfig.forEach(f => {
-        totals[f.key] += parseFloat(item[f.key]) || 0;
+      fieldKeys.forEach(key => {
+        totals[key] += parseFloat(item[key]) || 0;
       });
       grandTotal += parseFloat(item.total) || 0;
     });
 
-    // ─── PERBAIKAN: margin 25 agar lebih luas ───
-    const doc = new PDFDocument({ margin: 25, size: [841.89, 595.28] }); // A4 Landscape
+    // ── Buat PDF ──
+    const doc = new PDFDocument({ margin: 20, size: [841.89, 595.28] }); // A4 landscape
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=potongan-gaji-${Date.now()}.pdf`);
     doc.pipe(res);
 
-    const startX = 25; // mulai dari margin kiri
-    let currentY = 25;
+    const startX = 20;
+    let currentY = 20;
 
     // ── Kop Koperasi ──
+    // Perbaiki path logo: gunakan path absolut dari root proyek
     const logoPath = pengaturan?.logo_koperasi
-      ? path.join(__dirname, "..", "..", "public", "uploads", "pengaturan", pengaturan.logo_koperasi)
+      ? path.join(__dirname, "../../public/uploads/pengaturan", pengaturan.logo_koperasi)
       : null;
+
+    // Coba cari di beberapa lokasi jika tidak ditemukan
+    let logoLoaded = false;
     if (logoPath && fs.existsSync(logoPath)) {
-      doc.image(logoPath, startX, currentY, { width: 50, height: 50 });
+      try {
+        doc.image(logoPath, startX, currentY, { width: 50, height: 50 });
+        logoLoaded = true;
+      } catch (err) {
+        console.warn("Logo tidak bisa dimuat:", err.message);
+      }
     }
 
+    // Jika logo tidak ada, kita lewati
+    const leftOffset = logoLoaded ? 60 : 0;
     const namaKoperasi = pengaturan?.nama_koperasi || "KOPERASI KONSUMEN MITRA HUSADA SEJAHTERA";
     doc.fillColor("#000");
-    doc.fontSize(12).font("Helvetica-Bold").text(namaKoperasi, startX + 60, currentY + 5, {
-      width: 700,
+    doc.fontSize(12).font("Helvetica-Bold").text(namaKoperasi, startX + leftOffset, currentY + 5, {
+      width: 750 - leftOffset,
       align: "center",
     });
 
     doc.fontSize(7).font("Helvetica");
-    const infoY = currentY + 20;
+    const infoY = currentY + 22;
     const infoLines = [
       `Nomor : ${pengaturan?.no_badan_hukum || "-"}`,
       `Tanggal : ${formatTanggalIndonesia(pengaturan?.tgl_badan_hukum)}`,
       pengaturan?.alamat_koperasi || "Alamat Belum Diatur",
     ];
     infoLines.forEach((line, i) => {
-      doc.text(line, startX + 60, infoY + i * 10, { width: 700, align: "center" });
+      doc.text(line, startX + leftOffset, infoY + i * 10, { width: 750 - leftOffset, align: "center" });
     });
 
     currentY += 65;
@@ -1025,7 +1037,7 @@ exports.exportPdf = async (req, res) => {
       currentY = doc.y + 6;
     }
 
-    // ── PERBAIKAN: lebar kolom baru (total = 790) ──
+    // ── Lebar kolom (total 790) ──
     const colWidths = [
       18,   // No
       18,   // Urut
@@ -1044,7 +1056,6 @@ exports.exportPdf = async (req, res) => {
       48,   // Simpanan Pokok
       55    // Total
     ];
-    // Total = 18+18+105+40+22+22+48+48+52+48+58+52+52+48+48+55 = 790
 
     const headers = [
       "No", "Urut", "Nama", "Plafon", "JW", "Ke",
@@ -1069,21 +1080,19 @@ exports.exportPdf = async (req, res) => {
     };
 
     let rowY = drawHeader(currentY);
-    const pageHeight = 540; // area vertikal tersisa
+    const pageHeight = 540;
 
     // ── Isi Data ──
     data.forEach((item, idx) => {
       if (rowY + 12 > pageHeight) {
-        doc.addPage({ size: [841.89, 595.28], margin: 25 });
-        rowY = 25;
+        doc.addPage({ size: [841.89, 595.28], margin: 20 });
+        rowY = 20;
         rowY = drawHeader(rowY);
       }
 
       const y = rowY;
       let x = startX;
       const rowHeight = 11;
-
-      // Warna baris bergantian
       const bgColor = idx % 2 === 0 ? "#ffffff" : "#f8f9fa";
 
       for (let i = 0; i < colWidths.length; i++) {
@@ -1100,7 +1109,7 @@ exports.exportPdf = async (req, res) => {
       // Urut
       doc.text(item.no_urut ? String(item.no_urut) : "", x + 1, y + 1, { width: colWidths[1] - 2, align: "center" });
       x += colWidths[1];
-      // Nama (potong jika terlalu panjang)
+      // Nama
       const nama = (item.anggota?.nama || "-").substring(0, 25);
       doc.text(nama, x + 1, y + 1, { width: colWidths[2] - 2, align: "left" });
       x += colWidths[2];
@@ -1115,12 +1124,6 @@ exports.exportPdf = async (req, res) => {
       x += colWidths[5];
 
       // Field rincian
-      const fieldKeys = [
-        "simpanan_wajib", "simpanan_sukarela", "utang_barang_pokok", "utang_barang_jasa",
-        "utang_uang_menengah_pokok", "utang_uang_menengah_jasa",
-        "utang_uang_pendek_pokok", "utang_uang_pendek_jasa",
-        "simpanan_pokok"
-      ];
       for (let fi = 0; fi < fieldKeys.length; fi++) {
         const val = parseFloat(item[fieldKeys[fi]]) || 0;
         const display = val > 0 ? formatRupiah(val) : "";
@@ -1137,8 +1140,8 @@ exports.exportPdf = async (req, res) => {
     // ── Baris Total ──
     if (data.length > 0) {
       if (rowY + 14 > pageHeight) {
-        doc.addPage({ size: [841.89, 595.28], margin: 25 });
-        rowY = 25;
+        doc.addPage({ size: [841.89, 595.28], margin: 20 });
+        rowY = 20;
         rowY = drawHeader(rowY);
       }
 
@@ -1156,13 +1159,7 @@ exports.exportPdf = async (req, res) => {
       doc.text("TOTAL", x + 2, y + 2, { width: colWidths[0] + colWidths[1] + colWidths[2] - 4, align: "center" });
       x += colWidths[0] + colWidths[1] + colWidths[2];
 
-      // Total per kolom rincian
-      const fieldKeys = [
-        "simpanan_wajib", "simpanan_sukarela", "utang_barang_pokok", "utang_barang_jasa",
-        "utang_uang_menengah_pokok", "utang_uang_menengah_jasa",
-        "utang_uang_pendek_pokok", "utang_uang_pendek_jasa",
-        "simpanan_pokok"
-      ];
+      // Tampilkan total per kolom rincian (hanya jika nilainya > 0)
       for (let fi = 0; fi < fieldKeys.length; fi++) {
         const val = totals[fieldKeys[fi]] || 0;
         const display = val > 0 ? formatRupiah(val) : "";
@@ -1170,6 +1167,7 @@ exports.exportPdf = async (req, res) => {
         x += colWidths[6 + fi];
       }
 
+      // Total grand total
       doc.text(formatRupiah(grandTotal), x + 2, y + 2, { width: colWidths[colWidths.length - 1] - 4, align: "right" });
       rowY += rowHeight;
     }
