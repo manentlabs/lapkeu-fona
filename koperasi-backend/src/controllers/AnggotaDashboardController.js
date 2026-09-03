@@ -64,7 +64,7 @@ exports.index = async (req, res) => {
 
     // ---------- Data Pinjaman ----------
     const pinjaman = await Pinjaman.findAll({
-      where: { anggota_id: anggotaId },
+      where: { anggota_id: anggotaId, verifikasi_status: 'disetujui'  },
       attributes: ['status', 'plafon', 'sisa_angsuran']
     });
 
