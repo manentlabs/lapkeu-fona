@@ -14,6 +14,7 @@ router.get("/anggota-by-instansi", PotonganGajiController.getAnggotaByInstansi);
 router.post("/batch", PotonganGajiController.batchStore);
 router.post("/process-all", PotonganGajiController.processAll); // <── TAMBAHKAN INI
 router.get("/export-excel", PotonganGajiController.exportExcel);
+router.get("/export-pdf", PotonganGajiController.exportPdf);
 
 // ─── Route dinamis (dengan parameter :id) ────────────────────
 router.put("/:id", PotonganGajiController.update);

@@ -5,14 +5,35 @@ const Jurnal = require("../models/Jurnal");
 const Akun = require("../models/Akun");
 const KodeReferensi = require("../models/KodeReferensi");
 const Pinjaman = require("../models/Pinjaman");
+const PengaturanWebsite = require("../models/PengaturanWebsite");
 const sequelize = require("../config/database");
-const { QueryTypes } = require("sequelize");
-const { Op } = require("sequelize");
+const { QueryTypes, Op } = require("sequelize");
+const ExcelJS = require("exceljs");
+const PDFDocument = require("pdfkit");
+const fs = require("fs");
+const path = require("path");
 
-// Helper: generate no transaksi.
-// Dibuat lebih tahan tabrakan dibanding versi lama (yang hanya mengandalkan
-// Math.random 4 digit / hanya 10.000 kombinasi per hari). Sekarang mengecek
-// keunikan langsung ke DB dan mencoba ulang beberapa kali kalau bentrok.
+// ─── Helper format Rupiah ────────────────────────────────────
+function formatRupiah(value) {
+  const num = parseFloat(value) || 0;
+  return num.toLocaleString("id-ID", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+}
+
+function formatTanggalIndonesia(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return "-";
+  const bulan = [
+    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+  ];
+  return `${date.getDate()} ${bulan[date.getMonth()]} ${date.getFullYear()}`;
+}
+
+// ─── Helper: generate no transaksi ──────────────────────────
 async function generateNoTransaksi(t) {
   const now = new Date();
   const ymd = now.toISOString().slice(0, 10).replace(/-/g, "");
@@ -25,38 +46,78 @@ async function generateNoTransaksi(t) {
     });
     if (!exists) return candidate;
   }
-  // Fallback terakhir: tambahkan timestamp presisi tinggi supaya praktis mustahil bentrok
   return `POT-${ymd}-${Date.now()}`;
 }
 
-// ─── Index ────────────────────────────────────────────────────
+// ─── Index (dengan filter instansi) ─────────────────────────
 exports.index = async (req, res) => {
   try {
-    const { bulan, tahun, anggota_id, page = 1, per_page = 10 } = req.query;
+    const { bulan, tahun, instansi, page = 1, per_page = 10 } = req.query;
+
     const where = {};
     if (bulan) where.bulan = bulan;
     if (tahun) where.tahun = tahun;
-    if (anggota_id) where.anggota_id = anggota_id;
+
+    const include = [{
+      model: Anggota,
+      as: "anggota",
+      attributes: ["id", "no_anggota", "nama", "instansi"],
+    }];
+
+    if (instansi) {
+      include[0].where = { instansi };
+    }
 
     const { rows, count } = await PotonganGaji.findAndCountAll({
       where,
-      include: [{ model: Anggota, as: "anggota", attributes: ["id", "no_anggota", "nama"] }],
+      include,
       order: [["tahun", "DESC"], ["bulan", "DESC"], ["no_urut", "ASC"]],
       limit: parseInt(per_page),
       offset: (parseInt(page) - 1) * parseInt(per_page),
     });
 
-    // Ringkasan per bulan
-    const summary = await PotonganGaji.findAll({
-      attributes: ["bulan", "tahun", [sequelize.fn("SUM", sequelize.col("total")), "total"]],
-      group: ["bulan", "tahun"],
-      order: [["tahun", "DESC"], ["bulan", "DESC"]],
-      raw: true,
-    });
+    // Ringkasan per bulan (dengan filter instansi)
+    const summaryWhere = {};
+    if (bulan) summaryWhere.bulan = bulan;
+    if (tahun) summaryWhere.tahun = tahun;
+
+    // Untuk summary, perlu join dengan anggota untuk filter instansi
+    let summary = [];
+    if (instansi) {
+      // Ambil semua anggota di instansi tersebut
+      const anggotaIds = await Anggota.findAll({
+        where: { instansi, status: "aktif" },
+        attributes: ["id"],
+        raw: true,
+      });
+      const ids = anggotaIds.map(a => a.id);
+      if (ids.length > 0) {
+        summary = await PotonganGaji.findAll({
+          attributes: ["bulan", "tahun", [sequelize.fn("SUM", sequelize.col("total")), "total"]],
+          where: { ...summaryWhere, anggota_id: ids },
+          group: ["bulan", "tahun"],
+          order: [["tahun", "DESC"], ["bulan", "DESC"]],
+          raw: true,
+        });
+      }
+    } else {
+      summary = await PotonganGaji.findAll({
+        attributes: ["bulan", "tahun", [sequelize.fn("SUM", sequelize.col("total")), "total"]],
+        where: summaryWhere,
+        group: ["bulan", "tahun"],
+        order: [["tahun", "DESC"], ["bulan", "DESC"]],
+        raw: true,
+      });
+    }
 
     return res.json({
       data: rows,
-      pagination: { page: parseInt(page), per_page: parseInt(per_page), total: count, total_pages: Math.ceil(count / per_page) },
+      pagination: {
+        page: parseInt(page),
+        per_page: parseInt(per_page),
+        total: count,
+        total_pages: Math.ceil(count / per_page),
+      },
       summary,
     });
   } catch (error) {
@@ -65,6 +126,7 @@ exports.index = async (req, res) => {
   }
 };
 
+// ─── Store (import manual) ──────────────────────────────────
 exports.store = async (req, res) => {
   try {
     const { bulan, tahun, data } = req.body;
@@ -72,8 +134,6 @@ exports.store = async (req, res) => {
       return res.status(422).json({ message: "Data tidak lengkap." });
     }
 
-    // Cek duplikat HANYA terhadap data manual (import sebelumnya),
-    // bukan terhadap entri otomatis dari pinjaman
     const existing = await PotonganGaji.count({
       where: { bulan, tahun, sumber: "manual" },
     });
@@ -138,7 +198,7 @@ exports.store = async (req, res) => {
   }
 };
 
-// ─── Create Manual (utang / lain-lain, bukan dari pinjaman) ───
+// ─── Create Manual ──────────────────────────────────────────
 exports.create = async (req, res) => {
   try {
     const {
@@ -202,7 +262,7 @@ exports.create = async (req, res) => {
   }
 };
 
-// ─── Update (hanya untuk sumber manual & belum diproses) ───
+// ─── Update ──────────────────────────────────────────────────
 exports.update = async (req, res) => {
   try {
     const potongan = await PotonganGaji.findByPk(req.params.id);
@@ -249,6 +309,7 @@ exports.update = async (req, res) => {
   }
 };
 
+// ─── KREDIT_MAP & buildJurnalForPotongan ────────────────────
 const KREDIT_MAP = [
   ["simpanan_wajib", "3120", "Simpanan Wajib"],
   ["simpanan_sukarela", "2101", "Simpanan Sukarela"],
@@ -262,7 +323,6 @@ const KREDIT_MAP = [
 ];
 
 async function buildJurnalForPotongan(potongan, userId, t) {
-  // ── Validasi akun Kas dan kredit ──
   const akunKas = await Akun.findOne({ where: { kode_akun: "1102" }, transaction: t });
   if (!akunKas) throw new Error("Akun Kas Bank (kode 1102) tidak ditemukan.");
 
@@ -278,14 +338,11 @@ async function buildJurnalForPotongan(potongan, userId, t) {
   for (const [kodeAkun, label] of neededCodes) {
     const akun = await Akun.findOne({ where: { kode_akun: kodeAkun }, transaction: t });
     if (!akun) {
-      throw new Error(
-        `Akun untuk "${label}" (kode ${kodeAkun}) tidak ditemukan di master akun.`
-      );
+      throw new Error(`Akun untuk "${label}" (kode ${kodeAkun}) tidak ditemukan di master akun.`);
     }
     akunCache.set(kodeAkun, akun);
   }
 
-  // ── Kumpulkan akun kredit yang akan digunakan ──
   const kreditEntries = [];
   for (const [field, kodeAkun, label] of KREDIT_MAP) {
     const nilai = parseFloat(potongan[field]) || 0;
@@ -295,10 +352,8 @@ async function buildJurnalForPotongan(potongan, userId, t) {
     }
   }
 
-  // Tentukan akun kredit pertama
   const firstKredit = kreditEntries.length > 0 ? kreditEntries[0].akun : null;
 
-  // ── Jika ada pinjaman terkait, validasi dulu ──
   let pinjamanTerkait = null;
   if (potongan.sumber === "pinjaman") {
     if (!potongan.pinjaman_id) {
@@ -310,13 +365,12 @@ async function buildJurnalForPotongan(potongan, userId, t) {
     }
   }
 
-  // ── Ambil referensi ──
   let referensi = await KodeReferensi.findOne({ where: { kode: "POT-001" }, transaction: t });
   if (!referensi) {
     referensi = await KodeReferensi.create(
       {
         kode: "POT-001",
-        uraian_transaksi: "Potongan Gaji PKM SUDI",
+        uraian_transaksi: "Potongan Gaji",
         label: "Potongan Gaji",
         akun_debet: "Kas Bank",
         akun_kredit: "Beragam (lihat rincian jurnal)",
@@ -327,7 +381,6 @@ async function buildJurnalForPotongan(potongan, userId, t) {
 
   const noTransaksi = await generateNoTransaksi(t);
 
-  // ── Buat transaksi (dengan akun_kredit_id dan akun gabungan) ──
   const transaksi = await Transaksi.create(
     {
       no_transaksi: noTransaksi,
@@ -351,7 +404,6 @@ async function buildJurnalForPotongan(potongan, userId, t) {
     { transaction: t }
   );
 
-  // ── Jurnal debit ──
   await Jurnal.create(
     {
       transaksi_id: transaksi.id,
@@ -364,7 +416,6 @@ async function buildJurnalForPotongan(potongan, userId, t) {
     { transaction: t }
   );
 
-  // ── Jurnal kredit ──
   for (const { akun, nilai, label } of kreditEntries) {
     await Jurnal.create(
       {
@@ -379,10 +430,8 @@ async function buildJurnalForPotongan(potongan, userId, t) {
     );
   }
 
-  // ── Update status potongan ──
   await potongan.update({ is_processed: true }, { transaction: t });
 
-  // ── Update pinjaman jika ada ──
   if (pinjamanTerkait) {
     const sisaBaru = (pinjamanTerkait.sisa_angsuran || 0) - 1;
     await pinjamanTerkait.update(
@@ -415,10 +464,6 @@ exports.processToJurnal = async (req, res) => {
       return res.status(422).json({ message: "Potongan sudah diproses." });
     }
 
-    // FIX: verifyToken (middlewares/AuthMiddleware.js) hanya meng-set
-    // req.userId & req.userRole, TIDAK PERNAH req.user. Kode lama memakai
-    // req.user.id di sini, yang selalu undefined -> setiap panggilan
-    // endpoint ini pasti crash TypeError sebelum sempat membuat jurnal.
     const transaksi = await buildJurnalForPotongan(potongan, req.userId, t);
 
     await t.commit();
@@ -465,8 +510,6 @@ exports.processAll = async (req, res) => {
       }
       const t = await sequelize.transaction();
       try {
-        // FIX: sama seperti processToJurnal — req.user.id selalu undefined
-        // karena verifyToken cuma set req.userId. Pakai req.userId.
         await buildJurnalForPotongan(potongan, req.userId, t);
         await t.commit();
         success++;
@@ -478,9 +521,7 @@ exports.processAll = async (req, res) => {
     }
 
     return res.json({
-      message: `Selesai memproses ${bulan} ${tahun}: ${success} transaksi berhasil dibuat${
-        failed ? `, ${failed} gagal` : ""
-      }${skippedZero ? `, ${skippedZero} dilewati (total 0)` : ""}.`,
+      message: `Selesai memproses ${bulan} ${tahun}: ${success} transaksi berhasil dibuat${failed ? `, ${failed} gagal` : ""}${skippedZero ? `, ${skippedZero} dilewati (total 0)` : ""}.`,
       success,
       failed,
       skippedZero,
@@ -492,16 +533,7 @@ exports.processAll = async (req, res) => {
   }
 };
 
-// ─── Generate otomatis baris potongan cicilan pinjaman bulan ini ───
-// Dipanggil bendahara tiap awal bulan (atau dijadwalkan lewat cron
-// node-cron di server) untuk membuat baris PotonganGaji bagi SEMUA pinjaman
-// yang masih berjalan (status "aktif", metode_pembayaran "potong_gaji",
-// sisa_angsuran > 0). Baris bulan pertama sudah dibuat oleh
-// PinjamanController.verifikasi saat pinjaman disetujui — fungsi ini
-// mengisi bulan-bulan berikutnya sampai jangka_waktu selesai.
-//
-// Idempotent: kalau baris untuk pinjaman_id + bulan/tahun ini sudah ada,
-// dilewati (tidak dibuat dobel).
+// ─── Generate otomatis baris potongan cicilan pinjaman ──────
 exports.generatePinjamanBulanIni = async (req, res) => {
   try {
     const now = new Date();
@@ -572,9 +604,7 @@ exports.generatePinjamanBulanIni = async (req, res) => {
     }
 
     return res.json({
-      message: `Generate potongan pinjaman ${bulan} ${tahun}: ${created} baris baru dibuat${
-        skipped ? `, ${skipped} dilewati (sudah ada)` : ""
-      }${errors.length ? `, ${errors.length} gagal` : ""}.`,
+      message: `Generate potongan pinjaman ${bulan} ${tahun}: ${created} baris baru dibuat${skipped ? `, ${skipped} dilewati (sudah ada)` : ""}${errors.length ? `, ${errors.length} gagal` : ""}.`,
       created,
       skipped,
       errors,
@@ -601,6 +631,7 @@ exports.destroy = async (req, res) => {
   }
 };
 
+// ─── FIELD CONFIG ─────────────────────────────────────────────
 const FIELDS_POTONGAN = [
   "simpanan_wajib",
   "simpanan_sukarela",
@@ -613,7 +644,19 @@ const FIELDS_POTONGAN = [
   "utang_uang_pendek_jasa",
 ];
 
-// ─── Daftar instansi aktif (untuk dropdown) ─────────────────
+const FIELD_LABELS = {
+  simpanan_wajib: "Simpanan Wajib",
+  simpanan_sukarela: "Simpanan Sukarela",
+  simpanan_pokok: "Simpanan Pokok",
+  utang_barang_pokok: "Utang Barang Pokok",
+  utang_barang_jasa: "Utang Barang Jasa",
+  utang_uang_menengah_pokok: "Utang Uang Menengah Pokok",
+  utang_uang_menengah_jasa: "Utang Uang Menengah Jasa",
+  utang_uang_pendek_pokok: "Utang Uang Pendek Pokok",
+  utang_uang_pendek_jasa: "Utang Uang Pendek Jasa",
+};
+
+// ─── Daftar instansi aktif ──────────────────────────────────
 exports.listInstansi = async (req, res) => {
   try {
     const rows = await Anggota.findAll({
@@ -629,6 +672,7 @@ exports.listInstansi = async (req, res) => {
   }
 };
 
+// ─── Get Anggota by Instansi ────────────────────────────────
 exports.getAnggotaByInstansi = async (req, res) => {
   try {
     const { instansi, bulan, tahun } = req.query;
@@ -679,6 +723,7 @@ exports.getAnggotaByInstansi = async (req, res) => {
   }
 };
 
+// ─── Batch Store ─────────────────────────────────────────────
 exports.batchStore = async (req, res) => {
   const t = await sequelize.transaction();
   try {
@@ -716,7 +761,6 @@ exports.batchStore = async (req, res) => {
       });
 
       if (existing) {
-        // Jangan timpa entri otomatis dari pinjaman atau yang sudah diproses ke jurnal
         if (existing.sumber === "pinjaman" || existing.is_processed) {
           skipped++;
           continue;
@@ -752,9 +796,7 @@ exports.batchStore = async (req, res) => {
 
     await t.commit();
     return res.status(201).json({
-      message: `Berhasil disimpan untuk instansi ${instansi}: ${created} baru, ${updated} diperbarui${
-        skipped ? `, ${skipped} dilewati (kosong / sudah diproses / dari pinjaman)` : ""
-      }.`,
+      message: `Berhasil disimpan untuk instansi ${instansi}: ${created} baru, ${updated} diperbarui${skipped ? `, ${skipped} dilewati (kosong / sudah diproses / dari pinjaman)` : ""}.`,
       created,
       updated,
       skipped,
@@ -871,5 +913,252 @@ exports.exportExcel = async (req, res) => {
   } catch (error) {
     console.error("❌ Export Excel error:", error);
     res.status(500).json({ message: "Gagal mengekspor Excel." });
+  }
+};
+
+// ─── Export PDF ──────────────────────────────────────────────
+exports.exportPdf = async (req, res) => {
+  try {
+    const { bulan, tahun, instansi } = req.query;
+    const where = {};
+    if (bulan) where.bulan = bulan;
+    if (tahun) where.tahun = tahun;
+
+    const includeAnggota = {
+      model: Anggota,
+      as: "anggota",
+      attributes: ["id", "no_anggota", "nama", "instansi"],
+    };
+    if (instansi) {
+      includeAnggota.where = { instansi };
+    }
+
+    const data = await PotonganGaji.findAll({
+      where,
+      include: [includeAnggota],
+      order: [["tahun", "DESC"], ["bulan", "DESC"], ["no_urut", "ASC"]],
+    });
+
+    if (data.length === 0) {
+      return res.status(422).json({ message: "Tidak ada data potongan untuk diekspor." });
+    }
+
+    const pengaturan = await PengaturanWebsite.findOne();
+    const fieldConfig = [
+      { key: "simpanan_wajib", label: "Simpanan Wajib" },
+      { key: "simpanan_sukarela", label: "Simpanan Sukarela" },
+      { key: "utang_barang_pokok", label: "Utang Barang Pokok" },
+      { key: "utang_barang_jasa", label: "Utang Barang Jasa" },
+      { key: "utang_uang_menengah_pokok", label: "Utang Uang Menengah Pokok" },
+      { key: "utang_uang_menengah_jasa", label: "Utang Uang Menengah Jasa" },
+      { key: "utang_uang_pendek_pokok", label: "Utang Uang Pendek Pokok" },
+      { key: "utang_uang_pendek_jasa", label: "Utang Uang Pendek Jasa" },
+      { key: "simpanan_pokok", label: "Simpanan Pokok" },
+    ];
+
+    // Siapkan data untuk total per kolom
+    const totals = {};
+    fieldConfig.forEach(f => totals[f.key] = 0);
+    let grandTotal = 0;
+
+    data.forEach(item => {
+      fieldConfig.forEach(f => {
+        totals[f.key] += parseFloat(item[f.key]) || 0;
+      });
+      grandTotal += parseFloat(item.total) || 0;
+    });
+
+    const doc = new PDFDocument({ margin: 40, size: [841.89, 595.28] }); // A4 Landscape
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename=potongan-gaji-${Date.now()}.pdf`);
+    doc.pipe(res);
+
+    const startX = 40;
+    let currentY = 40;
+
+    // ── Kop Koperasi ──
+    const logoPath = pengaturan?.logo_koperasi
+      ? path.join(__dirname, "..", "..", "public", "uploads", "pengaturan", pengaturan.logo_koperasi)
+      : null;
+    if (logoPath && fs.existsSync(logoPath)) {
+      doc.image(logoPath, startX, currentY, { width: 60, height: 60 });
+    }
+
+    const namaKoperasi = pengaturan?.nama_koperasi || "KOPERASI KONSUMEN MITRA HUSADA SEJAHTERA";
+    doc.fillColor("#000");
+    doc.fontSize(14).font("Helvetica-Bold").text(namaKoperasi, startX + 70, currentY + 5, {
+      width: 700,
+      align: "center",
+    });
+
+    doc.fontSize(8).font("Helvetica");
+    const infoY = currentY + 25;
+    const infoLines = [
+      `Nomor : ${pengaturan?.no_badan_hukum || "-"}`,
+      `Tanggal : ${formatTanggalIndonesia(pengaturan?.tgl_badan_hukum)}`,
+      pengaturan?.alamat_koperasi || "Alamat Belum Diatur",
+    ];
+    infoLines.forEach((line, i) => {
+      doc.text(line, startX + 70, infoY + i * 12, { width: 700, align: "center" });
+    });
+
+    currentY += 75;
+    doc.moveTo(startX, currentY).lineTo(startX + 750, currentY).lineWidth(3).stroke("#000");
+    currentY += 2;
+    doc.moveTo(startX, currentY).lineTo(startX + 750, currentY).lineWidth(1).stroke("#000");
+    currentY += 15;
+
+    // ── Judul ──
+    const titleText = `POTONGAN BULAN ${bulan?.toUpperCase() || ""} ${tahun || ""}`;
+    doc.fontSize(11).font("Helvetica-Bold").text(titleText, startX, currentY, {
+      width: 750,
+      align: "center",
+    });
+    currentY = doc.y + 12;
+
+    if (instansi) {
+      doc.fontSize(9).font("Helvetica").text(`Instansi: ${instansi}`, startX, currentY, {
+        width: 750,
+        align: "left",
+      });
+      currentY = doc.y + 8;
+    }
+
+    // ── Header Tabel ──
+    const colWidths = [30, 30, 120, 50, 40, 35, 70, 60, 70, 65, 50, 70, 65, 70, 65, 70, 55];
+    const headers = [
+      "No", "Urut", "Nama", "Plafon", "JW", "Ke",
+      "Simp. Wajib", "Simp. Sukarela", "Utang Barang Pokok", "Utang Barang Jasa",
+      "Utang Uang Menengah Pokok", "Utang Uang Menengah Jasa",
+      "Utang Uang Pendek Pokok", "Utang Uang Pendek Jasa",
+      "Simpanan Pokok", "Total"
+    ];
+
+    const drawHeader = (y) => {
+      const hY = y;
+      // Baris pertama: header
+      let x = startX;
+      for (let i = 0; i < headers.length; i++) {
+        doc.rect(x, hY, colWidths[i], 16).fill("#6c757d").stroke();
+        doc.fillColor("#fff").fontSize(6).font("Helvetica-Bold")
+          .text(headers[i], x + 2, hY + 4, {
+            width: colWidths[i] - 4,
+            align: i === 2 ? "left" : "center"
+          });
+        x += colWidths[i];
+      }
+      return hY + 16;
+    };
+
+    let rowY = drawHeader(currentY);
+    const pageHeight = 520;
+
+    // ── Isi Data ──
+    data.forEach((item, idx) => {
+      if (rowY + 16 > pageHeight) {
+        doc.addPage({ size: [841.89, 595.28], margin: 40 });
+        rowY = 40;
+        rowY = drawHeader(rowY);
+      }
+
+      const y = rowY;
+      let x = startX;
+      const rowHeight = 14;
+
+      // Warna baris bergantian
+      const bgColor = idx % 2 === 0 ? "#ffffff" : "#f8f9fa";
+
+      for (let i = 0; i < colWidths.length; i++) {
+        doc.rect(x, y, colWidths[i], rowHeight).fill(bgColor).stroke();
+        x += colWidths[i];
+      }
+
+      doc.fillColor("#000").fontSize(6).font("Helvetica");
+
+      x = startX;
+      // No
+      doc.text(String(idx + 1), x + 2, y + 2, { width: colWidths[0] - 4, align: "center" });
+      x += colWidths[0];
+      // Urut
+      doc.text(item.no_urut ? String(item.no_urut) : "", x + 2, y + 2, { width: colWidths[1] - 4, align: "center" });
+      x += colWidths[1];
+      // Nama
+      const nama = item.anggota?.nama || "-";
+      doc.text(nama.substring(0, 30), x + 2, y + 2, { width: colWidths[2] - 4, align: "left" });
+      x += colWidths[2];
+      // Plafon
+      doc.text(item.plafon ? formatRupiah(item.plafon) : "", x + 2, y + 2, { width: colWidths[3] - 4, align: "right" });
+      x += colWidths[3];
+      // JW
+      doc.text(item.jangka_waktu || "", x + 2, y + 2, { width: colWidths[4] - 4, align: "center" });
+      x += colWidths[4];
+      // Ke
+      doc.text(item.angsuran_ke ? String(item.angsuran_ke) : "", x + 2, y + 2, { width: colWidths[5] - 4, align: "center" });
+      x += colWidths[5];
+
+      // Field rincian
+      const fieldKeys = [
+        "simpanan_wajib", "simpanan_sukarela", "utang_barang_pokok", "utang_barang_jasa",
+        "utang_uang_menengah_pokok", "utang_uang_menengah_jasa",
+        "utang_uang_pendek_pokok", "utang_uang_pendek_jasa",
+        "simpanan_pokok"
+      ];
+      for (let fi = 0; fi < fieldKeys.length; fi++) {
+        const val = parseFloat(item[fieldKeys[fi]]) || 0;
+        const display = val > 0 ? formatRupiah(val) : "";
+        doc.text(display, x + 2, y + 2, { width: colWidths[6 + fi] - 4, align: "right" });
+        x += colWidths[6 + fi];
+      }
+
+      // Total
+      doc.text(formatRupiah(item.total), x + 2, y + 2, { width: colWidths[colWidths.length - 1] - 4, align: "right" });
+
+      rowY += rowHeight;
+    });
+
+    // ── Baris Total ──
+    if (data.length > 0) {
+      if (rowY + 16 > pageHeight) {
+        doc.addPage({ size: [841.89, 595.28], margin: 40 });
+        rowY = 40;
+        rowY = drawHeader(rowY);
+      }
+
+      const y = rowY;
+      let x = startX;
+      const rowHeight = 16;
+
+      for (let i = 0; i < colWidths.length; i++) {
+        doc.rect(x, y, colWidths[i], rowHeight).fill("#e9ecef").stroke();
+        x += colWidths[i];
+      }
+
+      doc.fillColor("#000").fontSize(7).font("Helvetica-Bold");
+      x = startX;
+      doc.text("TOTAL", x + 2, y + 2, { width: colWidths[0] + colWidths[1] + colWidths[2] - 4, align: "center" });
+      x += colWidths[0] + colWidths[1] + colWidths[2];
+
+      // Total per kolom rincian
+      const fieldKeys = [
+        "simpanan_wajib", "simpanan_sukarela", "utang_barang_pokok", "utang_barang_jasa",
+        "utang_uang_menengah_pokok", "utang_uang_menengah_jasa",
+        "utang_uang_pendek_pokok", "utang_uang_pendek_jasa",
+        "simpanan_pokok"
+      ];
+      for (let fi = 0; fi < fieldKeys.length; fi++) {
+        const val = totals[fieldKeys[fi]] || 0;
+        const display = val > 0 ? formatRupiah(val) : "";
+        doc.text(display, x + 2, y + 2, { width: colWidths[6 + fi] - 4, align: "right" });
+        x += colWidths[6 + fi];
+      }
+
+      doc.text(formatRupiah(grandTotal), x + 2, y + 2, { width: colWidths[colWidths.length - 1] - 4, align: "right" });
+      rowY += rowHeight;
+    }
+
+    doc.end();
+  } catch (error) {
+    console.error("❌ Export PDF error:", error);
+    res.status(500).json({ message: "Gagal mengekspor PDF." });
   }
 };

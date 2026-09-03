@@ -11,6 +11,7 @@ import {
   XCircle,
   Download,
   FileSpreadsheet,
+  FileText,
   User,
   AlertCircle,
   ChevronDown,
@@ -27,7 +28,7 @@ import {
   Wand2,
 } from "lucide-react";
 
-const emptyFilters = { bulan: "", tahun: "" };
+const emptyFilters = { bulan: "", tahun: "", instansi: "" };
 const BULAN_LIST = [
   "Januari", "Februari", "Maret", "April", "Mei", "Juni",
   "Juli", "Agustus", "September", "Oktober", "November", "Desember",
@@ -75,9 +76,8 @@ export default function PotonganGajiPage() {
   const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
   const [filterOpen, setFilterOpen] = useState(true);
 
-  // State untuk filter export
-  const [exportInstansi, setExportInstansi] = useState("");
-  const [instansiExportOptions, setInstansiExportOptions] = useState([]);
+  // State untuk dropdown instansi
+  const [instansiOptions, setInstansiOptions] = useState([]);
 
   // Modal form (tambah/edit manual per-anggota)
   const [modalOpen, setModalOpen] = useState(false);
@@ -93,7 +93,6 @@ export default function PotonganGajiPage() {
 
   // Modal input per instansi (batch)
   const [instansiModalOpen, setInstansiModalOpen] = useState(false);
-  const [instansiOptions, setInstansiOptions] = useState([]);
   const [selectedInstansi, setSelectedInstansi] = useState("");
   const [instansiBulan, setInstansiBulan] = useState("");
   const [instansiTahun, setInstansiTahun] = useState(new Date().getFullYear());
@@ -119,6 +118,7 @@ export default function PotonganGajiPage() {
       const params = { page, per_page: 10 };
       if (activeFilters.bulan) params.bulan = activeFilters.bulan;
       if (activeFilters.tahun) params.tahun = activeFilters.tahun;
+      if (activeFilters.instansi) params.instansi = activeFilters.instansi;
       const { data } = await api.get("/potongan-gaji", { params });
       setData(data.data || []);
       setPagination(data.pagination || { page: 1, total_pages: 1, total: 0 });
@@ -130,12 +130,11 @@ export default function PotonganGajiPage() {
     }
   }, []);
 
-  // ─── Fetch daftar instansi untuk dropdown export ────────────
+  // ─── Fetch daftar instansi untuk dropdown ────────────────────
   const fetchInstansiOptions = useCallback(async () => {
     try {
       const { data } = await api.get("/potongan-gaji/instansi");
       setInstansiOptions(data.data || []);
-      setInstansiExportOptions(data.data || []);
     } catch (err) {
       console.error(err);
     }
@@ -194,7 +193,11 @@ export default function PotonganGajiPage() {
   const openCreateModal = () => {
     setEditingId(null);
     setSelectedAnggota(null);
-    setForm({ ...emptyForm, bulan: appliedFilters.bulan || "", tahun: appliedFilters.tahun || new Date().getFullYear() });
+    setForm({
+      ...emptyForm,
+      bulan: appliedFilters.bulan || "",
+      tahun: appliedFilters.tahun || new Date().getFullYear(),
+    });
     setError("");
     setModalOpen(true);
   };
@@ -281,6 +284,7 @@ export default function PotonganGajiPage() {
       const { data } = await api.post("/potongan-gaji/process-all", {
         bulan: appliedFilters.bulan,
         tahun: appliedFilters.tahun,
+        instansi: appliedFilters.instansi || undefined,
       });
       alert(data.message);
       fetchData(1, appliedFilters);
@@ -309,7 +313,7 @@ export default function PotonganGajiPage() {
       const params = {};
       if (appliedFilters.bulan) params.bulan = appliedFilters.bulan;
       if (appliedFilters.tahun) params.tahun = appliedFilters.tahun;
-      if (exportInstansi) params.instansi = exportInstansi;
+      if (appliedFilters.instansi) params.instansi = appliedFilters.instansi;
 
       const response = await api.get("/potongan-gaji/export-excel", {
         params,
@@ -333,6 +337,51 @@ export default function PotonganGajiPage() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       let message = "Gagal export Excel";
+      if (err.response?.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text();
+          message = JSON.parse(text).message || message;
+        } catch {}
+      } else if (err.response?.data?.message) {
+        message = err.response.data.message;
+      }
+      alert(message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // ─── Export PDF ─────────────────────────────────────────────
+  const handleExportPdf = async () => {
+    setExporting(true);
+    try {
+      const params = {};
+      if (appliedFilters.bulan) params.bulan = appliedFilters.bulan;
+      if (appliedFilters.tahun) params.tahun = appliedFilters.tahun;
+      if (appliedFilters.instansi) params.instansi = appliedFilters.instansi;
+
+      const response = await api.get("/potongan-gaji/export-pdf", {
+        params,
+        responseType: "blob",
+      });
+
+      if (response.data.type === "application/json") {
+        const text = await response.data.text();
+        const errorData = JSON.parse(text);
+        alert(errorData.message || "Gagal export PDF");
+        return;
+      }
+
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `potongan-gaji-${Date.now()}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      let message = "Gagal export PDF";
       if (err.response?.data instanceof Blob) {
         try {
           const text = await err.response.data.text();
@@ -548,11 +597,12 @@ export default function PotonganGajiPage() {
           {filterOpen && (
             <div className="border-t p-4 bg-gray-50">
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* ─── Panel Filter ────────────────────────── */}
                 <div className="lg:col-span-2 bg-white rounded-lg p-4 border">
                   <p className="text-xs font-semibold uppercase text-gray-500 flex items-center gap-2 mb-3">
                     <Search size={14} /> Filter Data
                   </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                       <label className="block text-xs text-gray-500 mb-1">Bulan</label>
                       <select
@@ -576,6 +626,19 @@ export default function PotonganGajiPage() {
                         className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Instansi</label>
+                      <select
+                        value={filters.instansi}
+                        onChange={(e) => handleFilterChange("instansi", e.target.value)}
+                        className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">Semua Instansi</option>
+                        {instansiOptions.map((i) => (
+                          <option key={i} value={i}>{i}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                   <div className="flex gap-2 mt-3">
                     <button
@@ -593,24 +656,11 @@ export default function PotonganGajiPage() {
                   </div>
                 </div>
 
-                {/* ─── Panel Export Excel ──────────────────── */}
+                {/* ─── Panel Export ────────────────────────── */}
                 <div className="bg-white rounded-lg p-4 border space-y-3">
                   <p className="text-xs font-semibold uppercase text-gray-500 flex items-center gap-2 mb-1">
-                    <FileSpreadsheet size={14} className="text-green-600" /> Excel
+                    <FileSpreadsheet size={14} className="text-green-600" /> Export
                   </p>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Filter Instansi (Opsional)</label>
-                    <select
-                      value={exportInstansi}
-                      onChange={(e) => setExportInstansi(e.target.value)}
-                      className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-green-500"
-                    >
-                      <option value="">Semua Instansi</option>
-                      {instansiExportOptions.map((instansi) => (
-                        <option key={instansi} value={instansi}>{instansi}</option>
-                      ))}
-                    </select>
-                  </div>
                   <button
                     onClick={handleExportExcel}
                     disabled={exporting}
@@ -618,6 +668,14 @@ export default function PotonganGajiPage() {
                   >
                     {exporting ? <Loader size={15} className="animate-spin" /> : <Download size={15} />}
                     Export Excel
+                  </button>
+                  <button
+                    onClick={handleExportPdf}
+                    disabled={exporting}
+                    className="flex items-center justify-center gap-2 px-4 py-2 border border-red-600 text-red-700 rounded-lg text-sm hover:bg-red-50 w-full disabled:opacity-60"
+                  >
+                    {exporting ? <Loader size={15} className="animate-spin" /> : <FileText size={15} />}
+                    Export PDF
                   </button>
                   <p className="text-xs text-gray-400 flex items-center gap-1">
                     <AlertCircle size={12} /> Export mengikuti filter bulan/tahun & instansi di atas.
@@ -1161,18 +1219,20 @@ export default function PotonganGajiPage() {
                   <span>{instansiAnggotaList.length} anggota &middot; {instansiRowsFilled} baris sudah diisi</span>
                   <span className="font-semibold text-green-700">Total: Rp {formatRupiah(instansiGrandTotal)}</span>
                 </div>
-                <div className="overflow-x-auto rounded-lg border">
+                <div className="overflow-auto max-h-[400px] rounded-lg border">
                   <table className="min-w-full text-sm">
-                    <thead className="bg-gray-50 text-gray-600">
+                    <thead className="bg-gray-50 text-gray-600 sticky top-0 z-10">
                       <tr>
-                        <th className="px-3 py-2 text-left sticky left-0 bg-gray-50 min-w-[180px]">Anggota</th>
+                        <th className="px-3 py-2 text-left sticky left-0 bg-gray-100 min-w-[180px] z-20 border-r">
+                          Anggota
+                        </th>
                         {FIELD_CONFIG.map(({ key, label }) => (
                           <th key={key} className="px-2 py-2 text-right whitespace-nowrap min-w-[150px]">
                             {label}
                           </th>
                         ))}
-                        <th className="px-3 py-2 text-right">Total</th>
-                        <th className="px-3 py-2 text-center">Status</th>
+                        <th className="px-3 py-2 text-right whitespace-nowrap">Total</th>
+                        <th className="px-3 py-2 text-center whitespace-nowrap">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
@@ -1180,7 +1240,7 @@ export default function PotonganGajiPage() {
                         const locked = row.is_processed || row.sumber === "pinjaman";
                         return (
                           <tr key={row.anggota_id} className={locked ? "bg-gray-50" : "hover:bg-gray-50"}>
-                            <td className="px-3 py-2 sticky left-0 bg-inherit">
+                            <td className="px-3 py-2 sticky left-0 bg-white min-w-[180px] border-r">
                               <p className="font-medium text-gray-800">{row.nama}</p>
                               <p className="text-xs text-gray-400">{row.no_anggota}</p>
                             </td>
