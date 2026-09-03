@@ -149,7 +149,7 @@ exports.index = async (req, res) => {
       offset: (parseInt(page) - 1) * parseInt(per_page),
     });
 
-    const total = await Transaksi.count({ where });
+    const total = count;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -172,21 +172,18 @@ exports.index = async (req, res) => {
       attributes: ["label"],
       group: ["label"],
       order: [["label", "ASC"]],
-      limit: 5,
       raw: true,
     });
     const namaAkunOptions = await Akun.findAll({
       attributes: ["nama_akun"],
       group: ["nama_akun"],
       order: [["nama_akun", "ASC"]],
-      limit: 5,
       raw: true,
     });
     const namaAnggotaOptions = await Anggota.findAll({
       attributes: ["nama"],
       group: ["nama"],
       order: [["nama", "ASC"]],
-      limit: 5,
       raw: true,
     });
 
@@ -263,6 +260,7 @@ exports.store = async (req, res) => {
     } = req.body;
 
     if (!tanggal || !deskripsi || !kode_referensi_id || !jurnal || jurnal.length === 0) {
+      await t.rollback();
       return res.status(422).json({ message: "Data tidak lengkap." });
     }
 
@@ -273,16 +271,23 @@ exports.store = async (req, res) => {
       totalKredit += parseFloat(row.kredit) || 0;
     }
     if (totalDebet !== totalKredit) {
+      await t.rollback();
       return res.status(422).json({ message: "Total debet harus sama dengan total kredit." });
     }
 
     if (no_transaksi) {
-      const existing = await Transaksi.findOne({ where: { no_transaksi } });
-      if (existing) return res.status(422).json({ message: "No. transaksi sudah digunakan." });
+      const existing = await Transaksi.findOne({ where: { no_transaksi }, transaction: t });
+      if (existing) {
+        await t.rollback();
+        return res.status(422).json({ message: "No. transaksi sudah digunakan." });
+      }
     }
 
-    const ref = await KodeReferensi.findByPk(kode_referensi_id);
-    if (!ref) return res.status(422).json({ message: "Kode referensi tidak ditemukan." });
+    const ref = await KodeReferensi.findByPk(kode_referensi_id, { transaction: t });
+    if (!ref) {
+      await t.rollback();
+      return res.status(422).json({ message: "Kode referensi tidak ditemukan." });
+    }
 
     // ✅ Validasi jenis dari referensi (tetap dipertahankan)
     if (ref.jenis_simpanan_id) {
@@ -291,6 +296,7 @@ exports.store = async (req, res) => {
         transaction: t,
       });
       if (!simpanan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis simpanan pada referensi tidak aktif atau tidak ditemukan." });
       }
     }
@@ -300,6 +306,7 @@ exports.store = async (req, res) => {
         transaction: t,
       });
       if (!tabungan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis tabungan pada referensi tidak aktif atau tidak ditemukan." });
       }
     }
@@ -309,6 +316,7 @@ exports.store = async (req, res) => {
         transaction: t,
       });
       if (!piutang) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis piutang pada referensi tidak aktif atau tidak ditemukan." });
       }
     }
@@ -318,6 +326,7 @@ exports.store = async (req, res) => {
         transaction: t,
       });
       if (!pendapatan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis pendapatan pada referensi tidak aktif atau tidak ditemukan." });
       }
     }
@@ -329,6 +338,7 @@ exports.store = async (req, res) => {
         transaction: t,
       });
       if (!simpanan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis simpanan yang dipilih tidak aktif atau tidak ditemukan." });
       }
     }
@@ -338,6 +348,7 @@ exports.store = async (req, res) => {
         transaction: t,
       });
       if (!tabungan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis tabungan yang dipilih tidak aktif atau tidak ditemukan." });
       }
     }
@@ -347,6 +358,7 @@ exports.store = async (req, res) => {
         transaction: t,
       });
       if (!piutang) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis piutang yang dipilih tidak aktif atau tidak ditemukan." });
       }
     }
@@ -356,19 +368,22 @@ exports.store = async (req, res) => {
         transaction: t,
       });
       if (!pendapatan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis pendapatan yang dipilih tidak aktif atau tidak ditemukan." });
       }
     }
 
     if (!req.userId) {
+      await t.rollback();
       return res.status(401).json({ message: "Anda harus login untuk menyimpan transaksi." });
     }
 
     const userId = req.userId;
-    const anggota = anggota_id ? await Anggota.findByPk(anggota_id) : null;
+    const anggota = anggota_id ? await Anggota.findByPk(anggota_id, { transaction: t }) : null;
 
     const akunSummary = await resolveAkunSummary(jurnal, ref, t);
     if (akunSummary.error) {
+      await t.rollback();
       return res.status(422).json({ message: akunSummary.error });
     }
 
@@ -457,8 +472,8 @@ exports.update = async (req, res) => {
       return res.status(404).json({ message: "Transaksi tidak ditemukan." });
     }
 
-    const refPembelian = await KodeReferensi.findOne({ where: { kode: KODE_REF.PEMBELIAN_TRANSFER } });
-    const refPenjualan = await KodeReferensi.findOne({ where: { kode: KODE_REF.PENJUALAN } });
+    const refPembelian = await KodeReferensi.findOne({ where: { kode: KODE_REF.PEMBELIAN_TRANSFER }, transaction: t });
+    const refPenjualan = await KodeReferensi.findOne({ where: { kode: KODE_REF.PENJUALAN }, transaction: t });
 
     if (refPembelian && transaksi.kode_referensi_id === refPembelian.id) {
       await t.rollback();
@@ -518,14 +533,14 @@ exports.update = async (req, res) => {
     }
 
     if (no_transaksi && no_transaksi !== transaksi.no_transaksi) {
-      const existing = await Transaksi.findOne({ where: { no_transaksi } });
+      const existing = await Transaksi.findOne({ where: { no_transaksi }, transaction: t });
       if (existing) {
         await t.rollback();
         return res.status(422).json({ message: "No. transaksi sudah digunakan." });
       }
     }
 
-    const ref = await KodeReferensi.findByPk(kode_referensi_id);
+    const ref = await KodeReferensi.findByPk(kode_referensi_id, { transaction: t });
     if (!ref) {
       await t.rollback();
       return res.status(422).json({ message: "Kode referensi tidak ditemukan." });
@@ -538,6 +553,7 @@ exports.update = async (req, res) => {
         transaction: t,
       });
       if (!simpanan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis simpanan pada referensi tidak aktif atau tidak ditemukan." });
       }
     }
@@ -547,6 +563,7 @@ exports.update = async (req, res) => {
         transaction: t,
       });
       if (!tabungan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis tabungan pada referensi tidak aktif atau tidak ditemukan." });
       }
     }
@@ -556,6 +573,7 @@ exports.update = async (req, res) => {
         transaction: t,
       });
       if (!piutang) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis piutang pada referensi tidak aktif atau tidak ditemukan." });
       }
     }
@@ -565,6 +583,7 @@ exports.update = async (req, res) => {
         transaction: t,
       });
       if (!pendapatan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis pendapatan pada referensi tidak aktif atau tidak ditemukan." });
       }
     }
@@ -576,6 +595,7 @@ exports.update = async (req, res) => {
         transaction: t,
       });
       if (!simpanan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis simpanan yang dipilih tidak aktif atau tidak ditemukan." });
       }
     }
@@ -585,6 +605,7 @@ exports.update = async (req, res) => {
         transaction: t,
       });
       if (!tabungan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis tabungan yang dipilih tidak aktif atau tidak ditemukan." });
       }
     }
@@ -594,6 +615,7 @@ exports.update = async (req, res) => {
         transaction: t,
       });
       if (!piutang) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis piutang yang dipilih tidak aktif atau tidak ditemukan." });
       }
     }
@@ -603,11 +625,12 @@ exports.update = async (req, res) => {
         transaction: t,
       });
       if (!pendapatan) {
+        await t.rollback();
         return res.status(422).json({ message: "Jenis pendapatan yang dipilih tidak aktif atau tidak ditemukan." });
       }
     }
 
-    const anggota = anggota_id ? await Anggota.findByPk(anggota_id) : null;
+    const anggota = anggota_id ? await Anggota.findByPk(anggota_id, { transaction: t }) : null;
     const akunSummary = await resolveAkunSummary(jurnal, ref, t);
     if (akunSummary.error) {
       await t.rollback();
@@ -677,7 +700,7 @@ exports.destroy = async (req, res) => {
       return res.status(404).json({ message: "Transaksi tidak ditemukan." });
     }
 
-    const refPembelian = await KodeReferensi.findOne({ where: { kode: KODE_REF.PEMBELIAN_TRANSFER } });
+    const refPembelian = await KodeReferensi.findOne({ where: { kode: KODE_REF.PEMBELIAN_TRANSFER }, transaction: t });
     if (refPembelian && transaksi.kode_referensi_id === refPembelian.id) {
       await t.rollback();
       return res.status(403).json({
@@ -813,223 +836,38 @@ exports.riwayatAnggota = async (req, res) => {
 };
 
 // ─── Simpan potongan gaji ────────────────────────────────────
+// DINONAKTIFKAN (410 Gone).
+//
+// Alasan: logika pemrosesan jurnal + penurunan sisa_angsuran pinjaman di
+// endpoint ini sudah dipindahkan ke PotonganGajiController.processToJurnal /
+// processAll (fungsi buildJurnalForPotongan), yang memakai KREDIT_MAP dengan
+// kode akun yang benar-benar ada di master akun (1102 Kas Bank, 1103 Piutang
+// Pinjaman, 1104 Piutang Jasa/Bunga, 1106 Piutang Dagang/Toko, 2101 Simpanan
+// Sukarela, 3110 Simpanan Pokok, 3120 Simpanan Wajib).
+//
+// Endpoint lama ini memakai `mapAkun` dengan kode akun (3001, 3002,
+// 2001–2007, 3003) yang TIDAK ADA di tabel akun manapun, sehingga setiap
+// pemanggilan akan selalu berakhir dengan `totalKredit === 0` dan merespons
+// 422 "Tidak ada potongan valid atau akun kas tidak ditemukan." Karena itu,
+// logika penurunan sisa_angsuran/angsuran_ke/status pinjaman yang ada di
+// bagian bawah fungsi ini pada praktiknya tidak pernah tereksekusi.
+//
+// Alur yang benar sekarang:
+// 1. PinjamanController.verifikasi membuat baris PotonganGaji (sumber:
+//    "pinjaman") + jurnal pencairan (Dr Piutang / Cr Kas) otomatis saat
+//    pinjaman disetujui.
+// 2. PotonganGajiController.processToJurnal (satu per satu) atau processAll
+//    (per bulan/instansi) memproses baris tersebut ke jurnal DAN menurunkan
+//    sisa_angsuran/angsuran_ke pinjaman terkait, sampai jangka waktu selesai.
+//
+// Fungsi ini tetap diekspor (bukan dihapus) supaya route yang masih
+// meng-require-nya tidak error saat startup; kalau masih ada yang
+// memanggilnya dari frontend, sebaiknya diarahkan ke menu Potongan Gaji.
 exports.storePotongan = async (req, res) => {
-  const t = await sequelize.transaction();
-  try {
-    const {
-      tanggal,
-      bulan,
-      tahun,
-      anggota_id,
-      simpanan_wajib,
-      simpanan_sukarela,
-      utang_brg_pokok,
-      utang_brg_jasa,
-      waserba,
-      utang_uang_menengah_pokok,
-      utang_uang_menengah_jasa,
-      utang_uang_pendek_pokok,
-      utang_uang_pendek_jasa,
-      simpanan_pokok,
-      total,
-      kode_referensi_id,
-      deskripsi,
-    } = req.body;
-
-    if (!req.userId) {
-      return res.status(401).json({ message: "Anda harus login untuk menyimpan transaksi." });
-    }
-    if (!anggota_id || !tanggal || !bulan || !tahun) {
-      return res.status(422).json({ message: "Data tidak lengkap." });
-    }
-    if (!kode_referensi_id) {
-      return res.status(422).json({ message: "Kode referensi wajib diisi." });
-    }
-
-    const ref = await KodeReferensi.findByPk(kode_referensi_id);
-    if (!ref) return res.status(422).json({ message: "Kode referensi tidak ditemukan." });
-
-    // ✅ Validasi jenis dari referensi jika ada
-    if (ref.jenis_simpanan_id) {
-      const simpanan = await JenisSimpanan.findOne({
-        where: { id: ref.jenis_simpanan_id, is_active: true },
-        transaction: t,
-      });
-      if (!simpanan) {
-        return res.status(422).json({ message: "Jenis simpanan pada referensi tidak aktif atau tidak ditemukan." });
-      }
-    }
-    if (ref.jenis_tabungan_id) {
-      const tabungan = await JenisTabungan.findOne({
-        where: { id: ref.jenis_tabungan_id, is_active: true },
-        transaction: t,
-      });
-      if (!tabungan) {
-        return res.status(422).json({ message: "Jenis tabungan pada referensi tidak aktif atau tidak ditemukan." });
-      }
-    }
-    if (ref.jenis_piutang_id) {
-      const piutang = await JenisPiutang.findOne({
-        where: { id: ref.jenis_piutang_id, is_active: true },
-        transaction: t,
-      });
-      if (!piutang) {
-        return res.status(422).json({ message: "Jenis piutang pada referensi tidak aktif atau tidak ditemukan." });
-      }
-    }
-    if (ref.jenis_pendapatan_id) {
-      const pendapatan = await JenisPendapatan.findOne({
-        where: { id: ref.jenis_pendapatan_id, is_active: true },
-        transaction: t,
-      });
-      if (!pendapatan) {
-        return res.status(422).json({ message: "Jenis pendapatan pada referensi tidak aktif atau tidak ditemukan." });
-      }
-    }
-
-    const anggota = await Anggota.findByPk(anggota_id);
-    if (!anggota) return res.status(422).json({ message: "Anggota tidak ditemukan." });
-
-    const pinjaman = await Pinjaman.findOne({
-      where: { anggota_id, status: "aktif" },
-      order: [["created_at", "DESC"]],
-    });
-    if (!pinjaman) {
-      return res.status(422).json({ message: "Tidak ada pinjaman aktif untuk anggota ini." });
-    }
-
-    const newSisa = pinjaman.sisa_angsuran - 1;
-    const newAngsuranKe = pinjaman.angsuran_ke + 1;
-    const statusPinjaman = newSisa <= 0 ? "lunas" : "aktif";
-
-    const jurnalEntries = [];
-    const akunKasBank = await Akun.findOne({ where: { kode_akun: "1102" } });
-    const akunKas = akunKasBank ? akunKasBank.id : null;
-
-    const mapAkun = {
-      simpanan_wajib: "3001",
-      simpanan_sukarela: "3002",
-      utang_brg_pokok: "2001",
-      utang_brg_jasa: "2002",
-      waserba: "2003",
-      utang_uang_menengah_pokok: "2004",
-      utang_uang_menengah_jasa: "2005",
-      utang_uang_pendek_pokok: "2006",
-      utang_uang_pendek_jasa: "2007",
-      simpanan_pokok: "3003",
-    };
-
-    const fields = [
-      "simpanan_wajib",
-      "simpanan_sukarela",
-      "utang_brg_pokok",
-      "utang_brg_jasa",
-      "waserba",
-      "utang_uang_menengah_pokok",
-      "utang_uang_menengah_jasa",
-      "utang_uang_pendek_pokok",
-      "utang_uang_pendek_jasa",
-      "simpanan_pokok",
-    ];
-
-    let totalKredit = 0;
-
-    for (const field of fields) {
-      const nilai = parseFloat(req.body[field]) || 0;
-      if (nilai > 0) {
-        const kodeAkun = mapAkun[field];
-        if (!kodeAkun) continue;
-        const akun = await Akun.findOne({ where: { kode_akun: kodeAkun } });
-        if (!akun) {
-          console.warn(`Akun dengan kode ${kodeAkun} tidak ditemukan.`);
-          continue;
-        }
-        jurnalEntries.push({
-          akun_id: akun.id,
-          debet: 0,
-          kredit: nilai,
-          keterangan: field.replace(/_/g, " ").toUpperCase(),
-        });
-        totalKredit += nilai;
-      }
-    }
-
-    if (totalKredit === 0 || !akunKas) {
-      return res.status(422).json({ message: "Tidak ada potongan valid atau akun kas tidak ditemukan." });
-    }
-
-    jurnalEntries.unshift({
-      akun_id: akunKas,
-      debet: totalKredit,
-      kredit: 0,
-      keterangan: "Kas Bank",
-    });
-
-    // Ambil jenis dari referensi (untuk potongan, kita tetap pakai dari ref karena tidak ada input manual)
-    const jenis_simpanan_id = ref.jenis_simpanan_id || null;
-    const jenis_tabungan_id = ref.jenis_tabungan_id || null;
-    const jenis_piutang_id = ref.jenis_piutang_id || null;
-    const jenis_pendapatan_id = ref.jenis_pendapatan_id || null;
-
-    const noTransaksi = `POT-${tahun}${bulan.padStart(2, "0")}-${anggota.no_anggota}`;
-
-    const transaksi = await Transaksi.create(
-      {
-        no_transaksi: noTransaksi,
-        kode_referensi_id: kode_referensi_id,
-        label: ref.label,
-        tanggal,
-        deskripsi: deskripsi || `Potongan gaji bulan ${bulan}/${tahun} - ${anggota.nama}`,
-        unit_usaha: "Simpan Pinjam",
-        anggota_id: anggota_id,
-        anggota: anggota.nama,
-        user_id: req.userId,
-        akun_id: akunKas,
-        akun_debet_id: akunKas,
-        akun_kredit_id: null,
-        akun: "Kas Bank",
-        jumlah: totalKredit,
-        jenis_simpanan_id,
-        jenis_tabungan_id,
-        jenis_piutang_id,
-        jenis_pendapatan_id,
-      },
-      { transaction: t }
-    );
-
-    for (const row of jurnalEntries) {
-      await Jurnal.create(
-        {
-          transaksi_id: transaksi.id,
-          tanggal,
-          akun_id: row.akun_id,
-          debet: row.debet,
-          kredit: row.kredit,
-          keterangan: row.keterangan,
-        },
-        { transaction: t }
-      );
-    }
-
-    await pinjaman.update(
-      {
-        sisa_angsuran: newSisa,
-        angsuran_ke: newAngsuranKe,
-        status: statusPinjaman,
-      },
-      { transaction: t }
-    );
-
-    await t.commit();
-    return res.status(201).json({
-      message: "Potongan gaji berhasil disimpan.",
-      data: { transaksi, jurnal: jurnalEntries },
-    });
-  } catch (error) {
-    await t.rollback();
-    console.error(error);
-    return res.status(500).json({ message: "Gagal menyimpan potongan gaji." });
-  }
+  return res.status(410).json({
+    message:
+      "Endpoint ini sudah tidak digunakan. Proses potongan gaji (termasuk cicilan pinjaman) sekarang dilakukan lewat menu Potongan Gaji (processToJurnal / processAll).",
+  });
 };
 
 

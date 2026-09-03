@@ -24,6 +24,7 @@ import {
   Clock,
   Building2,
   Save,
+  Wand2,
 } from "lucide-react";
 
 const emptyFilters = { bulan: "", tahun: "" };
@@ -38,48 +39,32 @@ function formatRupiah(value) {
   return num.toLocaleString("id-ID");
 }
 
+// ─── Sumber Kebenaran Tunggal untuk Field Potongan ─────────────
+// Dipakai bersama oleh: form manual, modal detail, dan tabel batch per instansi.
+// Kalau ada field baru dari backend, cukup tambahkan satu baris di sini saja.
+const FIELD_CONFIG = [
+  { key: "simpanan_wajib", label: "Simpanan Wajib" },
+  { key: "simpanan_sukarela", label: "Simpanan Sukarela" },
+  { key: "utang_barang_pokok", label: "Utang Barang Pokok" },
+  { key: "utang_barang_jasa", label: "Utang Barang Jasa" },
+  { key: "utang_uang_menengah_pokok", label: "Utang Uang Menengah Pokok" },
+  { key: "utang_uang_menengah_jasa", label: "Utang Uang Menengah Jasa" },
+  { key: "utang_uang_pendek_pokok", label: "Utang Uang Pendek Pokok" },
+  { key: "utang_uang_pendek_jasa", label: "Utang Uang Pendek Jasa" },
+  { key: "simpanan_pokok", label: "Simpanan Pokok" },
+];
+
+const FIELD_KEYS = FIELD_CONFIG.map((f) => f.key);
+
 const emptyForm = {
   bulan: "",
   tahun: new Date().getFullYear(),
   keterangan: "",
-  simpanan_wajib: 0,
-  simpanan_sukarela: 0,
-  utang_barang_pokok: 0,
-  utang_barang_jasa: 0,
-  utang_uang_menengah_pokok: 0,
-  utang_uang_menengah_jasa: 0,
-  utang_uang_pendek_pokok: 0,
-  utang_uang_pendek_jasa: 0,
-  simpanan_pokok: 0,
+  ...Object.fromEntries(FIELD_KEYS.map((k) => [k, 0])),
 };
 
-const FIELD_LABELS = [
-  ["simpanan_wajib", "Simp. Wajib"],
-  ["simpanan_sukarela", "Simp. Sukarela"],
-  ["utang_barang_pokok", "Utang Barang Pokok"],
-  ["utang_barang_jasa", "Utang Barang Jasa"],
-  ["utang_uang_menengah_pokok", "Utang Uang Menengah Pokok"],
-  ["utang_uang_menengah_jasa", "Utang Uang Menengah Jasa"],
-  ["utang_uang_pendek_pokok", "Utang Uang Pendek Pokok"],
-  ["utang_uang_pendek_jasa", "Utang Uang Pendek Jasa"],
-  ["simpanan_pokok", "Simp. Pokok"],
-];
-
-// Label pendek untuk kolom tabel batch-per-instansi (biar tabel tidak terlalu lebar)
-const BATCH_FIELD_LABELS = [
-  ["simpanan_wajib", "SW", "Simpanan Wajib"],
-  ["simpanan_sukarela", "SS", "Simpanan Sukarela"],
-  ["simpanan_pokok", "SP", "Simpanan Pokok"],
-  ["utang_barang_pokok", "UBP", "Utang Barang Pokok"],
-  ["utang_barang_jasa", "UBJ", "Utang Barang Jasa"],
-  ["utang_uang_menengah_pokok", "UMP", "Utang Uang Menengah Pokok"],
-  ["utang_uang_menengah_jasa", "UMJ", "Utang Uang Menengah Jasa"],
-  ["utang_uang_pendek_pokok", "UPP", "Utang Uang Pendek Pokok"],
-  ["utang_uang_pendek_jasa", "UPJ", "Utang Uang Pendek Jasa"],
-];
-
 function rowTotal(row) {
-  return BATCH_FIELD_LABELS.reduce((sum, [key]) => sum + (parseFloat(row[key]) || 0), 0);
+  return FIELD_KEYS.reduce((sum, key) => sum + (parseFloat(row[key]) || 0), 0);
 }
 
 export default function PotonganGajiPage() {
@@ -115,12 +100,16 @@ export default function PotonganGajiPage() {
   const [loadingInstansiAnggota, setLoadingInstansiAnggota] = useState(false);
   const [savingBatch, setSavingBatch] = useState(false);
   const [instansiError, setInstansiError] = useState("");
+  const [bulkSimpananWajib, setBulkSimpananWajib] = useState("");
 
   const [exporting, setExporting] = useState(false);
   const [processingId, setProcessingId] = useState(null);
   const [processingAll, setProcessingAll] = useState(false);
 
   const isEditing = Boolean(editingId);
+
+  // Dipakai untuk membatalkan request yang sudah usang (mencegah race condition)
+  const instansiFetchIdRef = useRef(0);
 
   // ─── Fetch Data ─────────────────────────────────────────────
   const fetchData = useCallback(async (page = 1, activeFilters) => {
@@ -145,9 +134,14 @@ export default function PotonganGajiPage() {
   }, [fetchData]);
 
   // ─── Ringkasan turunan ──────────────────────────────────────
-  const totalSemua = data.reduce((s, i) => s + (parseFloat(i.total) || 0), 0);
-  const totalDiproses = data.filter((i) => i.is_processed).length;
-  const anggotaUnik = new Set(data.map((i) => i.anggota_id)).size;
+  // Catatan: nilai berikut dihitung dari DATA HALAMAN AKTIF SAJA (bukan seluruh
+  // data yang difilter), karena backend belum menyediakan agregat anggota unik
+  // / status per filter. Label kartu sengaja ditulis eksplisit "Halaman Ini"
+  // supaya tidak menyesatkan bendahara. Untuk total keseluruhan per bulan,
+  // lihat panel ringkasan bulanan (memakai `summary` dari server).
+  const totalHalaman = data.reduce((s, i) => s + (parseFloat(i.total) || 0), 0);
+  const diprosesHalaman = data.filter((i) => i.is_processed).length;
+  const anggotaUnikHalaman = new Set(data.map((i) => i.anggota_id)).size;
 
   // ─── Filter ─────────────────────────────────────────────────
   const handleFilterChange = (key, value) => setFilters((f) => ({ ...f, [key]: value }));
@@ -208,15 +202,7 @@ export default function PotonganGajiPage() {
       bulan: item.bulan,
       tahun: item.tahun,
       keterangan: item.keterangan || "",
-      simpanan_wajib: item.simpanan_wajib || 0,
-      simpanan_sukarela: item.simpanan_sukarela || 0,
-      utang_barang_pokok: item.utang_barang_pokok || 0,
-      utang_barang_jasa: item.utang_barang_jasa || 0,
-      utang_uang_menengah_pokok: item.utang_uang_menengah_pokok || 0,
-      utang_uang_menengah_jasa: item.utang_uang_menengah_jasa || 0,
-      utang_uang_pendek_pokok: item.utang_uang_pendek_pokok || 0,
-      utang_uang_pendek_jasa: item.utang_uang_pendek_jasa || 0,
-      simpanan_pokok: item.simpanan_pokok || 0,
+      ...Object.fromEntries(FIELD_KEYS.map((k) => [k, item[k] || 0])),
     });
     setError("");
     setModalOpen(true);
@@ -368,6 +354,7 @@ export default function PotonganGajiPage() {
     setInstansiTahun(appliedFilters.tahun || new Date().getFullYear());
     setInstansiAnggotaList([]);
     setInstansiError("");
+    setBulkSimpananWajib("");
     setInstansiModalOpen(true);
     if (instansiOptions.length === 0) fetchInstansiOptions();
   };
@@ -377,24 +364,30 @@ export default function PotonganGajiPage() {
       setInstansiAnggotaList([]);
       return;
     }
+    // Tandai permintaan ini sebagai yang terbaru; kalau ada permintaan lain
+    // menyusul sebelum yang ini selesai, hasil yang ini akan diabaikan.
+    const fetchId = ++instansiFetchIdRef.current;
     setLoadingInstansiAnggota(true);
     setInstansiError("");
     try {
       const { data } = await api.get("/potongan-gaji/anggota-by-instansi", {
         params: { instansi, bulan, tahun },
       });
+      if (fetchId !== instansiFetchIdRef.current) return; // hasil sudah usang, abaikan
       setInstansiAnggotaList(data.data || []);
     } catch (err) {
+      if (fetchId !== instansiFetchIdRef.current) return;
       setInstansiError(err.response?.data?.message || "Gagal mengambil data anggota.");
       setInstansiAnggotaList([]);
     } finally {
-      setLoadingInstansiAnggota(false);
+      if (fetchId === instansiFetchIdRef.current) setLoadingInstansiAnggota(false);
     }
   }, []);
 
   useEffect(() => {
     if (instansiModalOpen && selectedInstansi && instansiBulan && instansiTahun) {
       loadAnggotaByInstansi(selectedInstansi, instansiBulan, instansiTahun);
+      setBulkSimpananWajib("");
     } else if (instansiModalOpen) {
       setInstansiAnggotaList([]);
     }
@@ -407,8 +400,24 @@ export default function PotonganGajiPage() {
     );
   };
 
+  // Isi nilai Simpanan Wajib yang sama untuk semua anggota yang masih bisa diedit
+  // (baris berstatus "Diproses" atau bersumber dari "pinjaman" tetap dilewati,
+  // konsisten dengan aturan kunci baris lainnya di tabel ini).
+  const applyBulkSimpananWajib = () => {
+    const raw = bulkSimpananWajib.replace(/[^\d]/g, "");
+    if (!raw) return;
+    setInstansiAnggotaList((prev) =>
+      prev.map((r) =>
+        r.is_processed || r.sumber === "pinjaman" ? r : { ...r, simpanan_wajib: raw }
+      )
+    );
+  };
+
   const instansiGrandTotal = instansiAnggotaList.reduce((sum, r) => sum + rowTotal(r), 0);
   const instansiRowsFilled = instansiAnggotaList.filter((r) => rowTotal(r) > 0).length;
+  const instansiEditableCount = instansiAnggotaList.filter(
+    (r) => !r.is_processed && r.sumber !== "pinjaman"
+  ).length;
 
   const handleInstansiBatchSubmit = async () => {
     setInstansiError("");
@@ -417,7 +426,7 @@ export default function PotonganGajiPage() {
       .filter((r) => rowTotal(r) > 0)
       .map((r) => {
         const payload = { anggota_id: r.anggota_id, keterangan: r.keterangan || "" };
-        BATCH_FIELD_LABELS.forEach(([key]) => {
+        FIELD_KEYS.forEach((key) => {
           payload[key] = parseFloat(r[key]) || 0;
         });
         return payload;
@@ -485,33 +494,50 @@ export default function PotonganGajiPage() {
           </div>
         </div>
 
-        {/* Ringkasan */}
+        {/* Ringkasan (halaman aktif) */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <SummaryCard
-            label="Anggota Terdampak"
-            value={anggotaUnik}
+            label="Anggota (Halaman Ini)"
+            value={anggotaUnikHalaman}
             icon={<Users size={18} className="text-blue-600" />}
             color="blue"
           />
           <SummaryCard
-            label="Total Potongan"
-            value={`Rp ${formatRupiah(totalSemua)}`}
+            label="Total Potongan (Halaman Ini)"
+            value={`Rp ${formatRupiah(totalHalaman)}`}
             icon={<Wallet size={18} className="text-green-600" />}
             color="green"
           />
           <SummaryCard
-            label="Sudah Diproses"
-            value={`${totalDiproses} / ${data.length}`}
+            label="Sudah Diproses (Halaman Ini)"
+            value={`${diprosesHalaman} / ${data.length}`}
             icon={<CheckCircle size={18} className="text-emerald-600" />}
             color="green"
           />
           <SummaryCard
-            label="Belum Diproses"
-            value={data.length - totalDiproses}
+            label="Belum Diproses (Halaman Ini)"
+            value={data.length - diprosesHalaman}
             icon={<Clock size={18} className="text-amber-600" />}
             color="amber"
           />
         </div>
+
+        {/* Ringkasan Bulanan (dari server, mencakup seluruh data — bukan hanya halaman aktif) */}
+        {summary.length > 0 && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+            <p className="text-xs font-semibold uppercase text-gray-500 mb-3">Total Potongan per Bulan</p>
+            <div className="flex flex-wrap gap-2">
+              {summary.map((s) => (
+                <span
+                  key={`${s.bulan}-${s.tahun}`}
+                  className="rounded-lg bg-gray-50 border px-3 py-1.5 text-xs text-gray-600"
+                >
+                  {s.bulan} {s.tahun}: <span className="font-semibold text-green-700">Rp {formatRupiah(s.total)}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Filter & Export */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
@@ -703,8 +729,8 @@ export default function PotonganGajiPage() {
             {!loading && data.length > 0 && (
               <tfoot>
                 <tr className="bg-gray-50 font-semibold">
-                  <td colSpan="4" className="px-4 py-3 text-right">TOTAL</td>
-                  <td className="px-4 py-3 text-right font-mono text-green-700">Rp {formatRupiah(totalSemua)}</td>
+                  <td colSpan="4" className="px-4 py-3 text-right">TOTAL (Halaman Ini)</td>
+                  <td className="px-4 py-3 text-right font-mono text-green-700">Rp {formatRupiah(totalHalaman)}</td>
                   <td colSpan="2"></td>
                 </tr>
               </tfoot>
@@ -776,35 +802,7 @@ export default function PotonganGajiPage() {
             <p className="text-sm text-gray-500">
               Menampilkan {(pagination.page - 1) * 10 + 1}–{Math.min(pagination.page * 10, pagination.total)} dari {pagination.total}
             </p>
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                onClick={() => goToPage(pagination.page - 1)}
-                disabled={pagination.page <= 1}
-                className="h-8 px-3 rounded-lg border text-sm text-gray-600 disabled:opacity-40 hover:bg-gray-50"
-              >
-                Sebelumnya
-              </button>
-              <div className="flex flex-wrap gap-1.5">
-                {Array.from({ length: pagination.total_pages }, (_, i) => i + 1).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => goToPage(p)}
-                    className={`h-8 w-8 rounded-lg text-sm ${
-                      p === pagination.page ? "bg-blue-600 text-white" : "border hover:bg-gray-50"
-                    }`}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={() => goToPage(pagination.page + 1)}
-                disabled={pagination.page >= pagination.total_pages}
-                className="h-8 px-3 rounded-lg border text-sm text-gray-600 disabled:opacity-40 hover:bg-gray-50"
-              >
-                Berikutnya
-              </button>
-            </div>
+            <PaginationControls pagination={pagination} onGoToPage={goToPage} />
           </div>
         )}
       </div>
@@ -867,7 +865,7 @@ export default function PotonganGajiPage() {
               <div className="overflow-hidden rounded-lg border">
                 <table className="min-w-full text-sm">
                   <tbody className="divide-y">
-                    {FIELD_LABELS.map(([key, label]) => (
+                    {FIELD_CONFIG.map(({ key, label }) => (
                       <tr key={key}>
                         <td className="px-4 py-2.5 text-gray-500">{label}</td>
                         <td className="px-4 py-2.5 text-right font-mono">Rp {formatRupiah(detailItem[key])}</td>
@@ -995,7 +993,7 @@ export default function PotonganGajiPage() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-                {FIELD_LABELS.map(([key, label]) => (
+                {FIELD_CONFIG.map(({ key, label }) => (
                   <div key={key}>
                     <label className="mb-1 block text-sm text-gray-700">{label}</label>
                     <input
@@ -1016,7 +1014,7 @@ export default function PotonganGajiPage() {
               <div className="rounded-lg bg-gray-50 px-4 py-3 flex justify-between items-center">
                 <span className="text-sm text-gray-500">Total</span>
                 <span className="font-bold text-green-700">
-                  Rp {formatRupiah(FIELD_LABELS.reduce((s, [key]) => s + (parseFloat(form[key]) || 0), 0))}
+                  Rp {formatRupiah(FIELD_KEYS.reduce((s, key) => s + (parseFloat(form[key]) || 0), 0))}
                 </span>
               </div>
             </form>
@@ -1118,6 +1116,37 @@ export default function PotonganGajiPage() {
               </div>
             ) : (
               <>
+                {/* Isi cepat: Simpanan Wajib untuk semua anggota sekaligus */}
+                <div className="flex flex-wrap items-end gap-2 rounded-lg border border-purple-200 bg-purple-50 p-3">
+                  <div className="min-w-[220px] flex-1">
+                    <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">
+                      <Wand2 size={13} className="text-purple-600" />
+                      Isi Simpanan Wajib untuk Semua Anggota
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={bulkSimpananWajib ? Number(bulkSimpananWajib).toLocaleString("id-ID") : ""}
+                      onChange={(e) => setBulkSimpananWajib(e.target.value.replace(/[^\d]/g, ""))}
+                      placeholder="Misal: 180.000"
+                      className="w-full rounded-lg border px-3 py-2 text-sm focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={applyBulkSimpananWajib}
+                    disabled={!bulkSimpananWajib || instansiEditableCount === 0}
+                    className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+                  >
+                    Terapkan ke Semua ({instansiEditableCount})
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400">
+                  Nilai ini otomatis mengisi kolom <strong>Simpanan Wajib</strong> untuk semua anggota yang belum
+                  diproses / bukan dari pinjaman. Anda tetap bisa mengubah nilai satu per satu di tabel bila ada
+                  anggota dengan nominal berbeda.
+                </p>
+
                 <div className="flex items-center justify-between text-sm text-gray-500">
                   <span>{instansiAnggotaList.length} anggota &middot; {instansiRowsFilled} baris sudah diisi</span>
                   <span className="font-semibold text-green-700">Total: Rp {formatRupiah(instansiGrandTotal)}</span>
@@ -1127,9 +1156,9 @@ export default function PotonganGajiPage() {
                     <thead className="bg-gray-50 text-gray-600">
                       <tr>
                         <th className="px-3 py-2 text-left sticky left-0 bg-gray-50 min-w-[180px]">Anggota</th>
-                        {BATCH_FIELD_LABELS.map(([key, short, full]) => (
-                          <th key={key} className="px-2 py-2 text-right whitespace-nowrap" title={full}>
-                            {short}
+                        {FIELD_CONFIG.map(({ key, label }) => (
+                          <th key={key} className="px-2 py-2 text-right whitespace-nowrap min-w-[150px]">
+                            {label}
                           </th>
                         ))}
                         <th className="px-3 py-2 text-right">Total</th>
@@ -1145,7 +1174,7 @@ export default function PotonganGajiPage() {
                               <p className="font-medium text-gray-800">{row.nama}</p>
                               <p className="text-xs text-gray-400">{row.no_anggota}</p>
                             </td>
-                            {BATCH_FIELD_LABELS.map(([key]) => (
+                            {FIELD_CONFIG.map(({ key }) => (
                               <td key={key} className="px-2 py-2">
                                 <input
                                   type="text"
@@ -1157,7 +1186,7 @@ export default function PotonganGajiPage() {
                                     handleInstansiRowChange(row.anggota_id, key, raw);
                                   }}
                                   placeholder="0"
-                                  className={`w-24 text-right border rounded px-2 py-1 text-sm focus:ring-2 focus:ring-purple-500 ${
+                                  className={`w-32 text-right border rounded px-2 py-1 text-sm focus:ring-2 focus:ring-purple-500 ${
                                     locked ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""
                                   }`}
                                 />
@@ -1237,6 +1266,15 @@ function AnggotaSearchInput({ selected, onSelect }) {
   const [open, setOpen] = useState(false);
   const [searching, setSearching] = useState(false);
   const timeoutRef = useRef(null);
+  const requestIdRef = useRef(0);
+
+  // Bersihkan timeout yang masih tertunda kalau komponen ini di-unmount
+  // (misal modal ditutup saat user masih mengetik).
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
 
   const handleChange = (val) => {
     setQuery(val);
@@ -1248,15 +1286,17 @@ function AnggotaSearchInput({ selected, onSelect }) {
       return;
     }
     timeoutRef.current = setTimeout(async () => {
+      const requestId = ++requestIdRef.current;
       setSearching(true);
       try {
         const { data } = await api.get("/anggota", {
           params: { search: val, status: "aktif", per_page: 8 },
         });
+        if (requestId !== requestIdRef.current) return; // hasil sudah usang, abaikan
         setOptions(data.data || []);
         setOpen(true);
       } finally {
-        setSearching(false);
+        if (requestId === requestIdRef.current) setSearching(false);
       }
     }, 300);
   };
@@ -1319,6 +1359,63 @@ function AnggotaSearchInput({ selected, onSelect }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Kontrol Pagination ────────────────────────────────────────
+function PaginationControls({ pagination, onGoToPage }) {
+  const { page, total_pages } = pagination;
+
+  // Batasi jumlah tombol yang dirender: halaman pertama, terakhir, dan
+  // beberapa halaman di sekitar halaman aktif — dengan elipsis di antaranya.
+  const pages = [];
+  const windowSize = 1;
+  for (let p = 1; p <= total_pages; p++) {
+    const isEdge = p === 1 || p === total_pages;
+    const isNearCurrent = Math.abs(p - page) <= windowSize;
+    if (isEdge || isNearCurrent) {
+      pages.push(p);
+    } else if (pages[pages.length - 1] !== "…") {
+      pages.push("…");
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button
+        onClick={() => onGoToPage(page - 1)}
+        disabled={page <= 1}
+        className="h-8 px-3 rounded-lg border text-sm text-gray-600 disabled:opacity-40 hover:bg-gray-50"
+      >
+        Sebelumnya
+      </button>
+      <div className="flex flex-wrap gap-1.5">
+        {pages.map((p, idx) =>
+          p === "…" ? (
+            <span key={`ellipsis-${idx}`} className="flex h-8 w-8 items-center justify-center text-sm text-gray-400">
+              …
+            </span>
+          ) : (
+            <button
+              key={p}
+              onClick={() => onGoToPage(p)}
+              className={`h-8 w-8 rounded-lg text-sm ${
+                p === page ? "bg-blue-600 text-white" : "border hover:bg-gray-50"
+              }`}
+            >
+              {p}
+            </button>
+          )
+        )}
+      </div>
+      <button
+        onClick={() => onGoToPage(page + 1)}
+        disabled={page >= total_pages}
+        className="h-8 px-3 rounded-lg border text-sm text-gray-600 disabled:opacity-40 hover:bg-gray-50"
+      >
+        Berikutnya
+      </button>
     </div>
   );
 }

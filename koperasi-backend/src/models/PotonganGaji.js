@@ -16,6 +16,19 @@ const PotonganGaji = sequelize.define(
       allowNull: false,
       comment: "Foreign key ke tabel anggota",
     },
+    // Ditambahkan: mengaitkan baris potongan cicilan pinjaman ke Pinjaman
+    // yang spesifik. WAJIB dipakai (bukan opsional) untuk sumber "pinjaman",
+    // karena satu anggota bisa punya lebih dari satu pinjaman aktif
+    // sekaligus (pinjaman lama yang sudah separuh lunas + pinjaman baru
+    // yang baru disetujui) -- anggota_id saja tidak cukup untuk menentukan
+    // pinjaman mana yang sedang dilunasi oleh potongan ini.
+    // Nullable karena baris "manual" (bukan dari pinjaman) tidak punya
+    // pinjaman terkait sama sekali.
+    pinjaman_id: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: true,
+      comment: "Foreign key ke tabel pinjaman (hanya diisi untuk sumber = 'pinjaman')",
+    },
     bulan: {
       type: DataTypes.STRING(20),
       allowNull: false,
@@ -32,13 +45,6 @@ const PotonganGaji = sequelize.define(
       comment: "Nomor urut potongan untuk anggota tersebut",
     },
 
-    // ─── Sumber data & keterangan ───────────────────────────
-    // Kolom ini WAJIB ada karena dipakai di semua controller
-    // (PotonganGajiController.create/update, PinjamanController.verifikasi)
-    // dan ditampilkan sebagai kolom "Sumber" di halaman Potongan Gaji.
-    // Sebelumnya kolom ini tidak terdaftar di model, sehingga Sequelize
-    // selalu men-strip field ini sebelum INSERT -> gagal karena NOT NULL
-    // di database, dan error-nya tertelan try/catch di controller.
     sumber: {
       type: DataTypes.ENUM("manual", "pinjaman"),
       allowNull: false,

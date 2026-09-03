@@ -19,7 +19,6 @@ export const ROLES = {
     menu: [
       { type: "link", label: "Dashboard", path: "/dashboard/bendahara", icon: "LayoutDashboard" },
       { type: "link", label: "Transaksi", path: "/dashboard/bendahara/transaksi", icon: "Wallet" },
-      { type: "link", label: "Potongan Gaji", path: "/dashboard/bendahara/potongan-gaji", icon: "Wallet" },
       { type: "link", label: "Kalkulator Pajak", path: "/dashboard/bendahara/kalkulator-pajak", icon: "Calculator" },
 
       {
@@ -27,7 +26,9 @@ export const ROLES = {
         label: "Pinjaman",
         icon: "HandCoins",
         children: [
-          { label: "Verifikasi Pinjaman", path: "/dashboard/bendahara/verifikasi", icon: "ClipboardCheck" }        ],
+          { label: "Verifikasi Pinjaman", path: "/dashboard/bendahara/verifikasi", icon: "ClipboardCheck" },        
+          { label: "Potongan Gaji", path: "/dashboard/bendahara/potongan-gaji", icon: "Wallet" },
+          ],
       },
       
       {

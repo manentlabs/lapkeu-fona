@@ -34,10 +34,7 @@ function blankRow() {
   };
 }
 
-// ✅ Fix: pastikan dropdown react-select tidak terpotong/ketutup oleh
-// container yang punya overflow (mis. div.overflow-x-auto pada tabel jurnal).
-// Menu di-render lewat portal ke document.body dan posisinya "fixed"
-// relatif terhadap viewport, bukan parent yang scrollable.
+// Fix dropdown portal
 const selectMenuPortalStyle = {
   menuPortal: (base) => ({ ...base, zIndex: 9999 }),
   menu: (base) => ({ ...base, zIndex: 9999 }),
@@ -65,7 +62,6 @@ export default function TransaksiFormPage() {
     unit_usaha: "",
     anggota_id: "",
     kode_referensi_id: "",
-    // Tambahan field jenis
     jenis_simpanan_id: "",
     jenis_tabungan_id: "",
     jenis_piutang_id: "",
@@ -77,11 +73,19 @@ export default function TransaksiFormPage() {
   const [anggotaList, setAnggotaList] = useState([]);
   const [akunList, setAkunList] = useState([]);
 
-  // Data master jenis
   const [jenisSimpananList, setJenisSimpananList] = useState([]);
   const [jenisTabunganList, setJenisTabunganList] = useState([]);
   const [jenisPiutangList, setJenisPiutangList] = useState([]);
   const [jenisPendapatanList, setJenisPendapatanList] = useState([]);
+
+  // State untuk menonaktifkan dropdown jenis berdasarkan referensi
+  const [disableSimpanan, setDisableSimpanan] = useState(false);
+  const [disableTabungan, setDisableTabungan] = useState(false);
+  const [disablePiutang, setDisablePiutang] = useState(false);
+  const [disablePendapatan, setDisablePendapatan] = useState(false);
+
+  // Flag untuk membedakan inisialisasi awal (edit) agar tidak menimpa data
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   // Fetch all form data
   useEffect(() => {
@@ -91,7 +95,6 @@ export default function TransaksiFormPage() {
       setLoading(true);
       setError("");
       try {
-        // Ambil data form utama
         const { data: formData } = await api.get("/transaksi/form-data");
         if (cancelled) return;
 
@@ -99,7 +102,6 @@ export default function TransaksiFormPage() {
         setAnggotaList(formData.anggota || []);
         setAkunList(formData.akun || []);
 
-        // Ambil daftar jenis simpanan, tabungan, piutang, pendapatan
         const [simpananRes, tabunganRes, piutangRes, pendapatanRes] = await Promise.all([
           api.get("/pengaturan/jenis-simpanan", { params: { include_inactive: false } }),
           api.get("/pengaturan/jenis-tabungan", { params: { include_inactive: false } }),
@@ -154,8 +156,11 @@ export default function TransaksiFormPage() {
             };
           });
           setJurnal(rows);
+          // Setelah data diisi, kita anggap inisialisasi selesai
+          setIsInitialLoad(false);
         } else {
           setJurnal([blankRow(), blankRow()]);
+          setIsInitialLoad(false);
         }
       } catch (err) {
         if (!cancelled) {
@@ -173,7 +178,52 @@ export default function TransaksiFormPage() {
     };
   }, [id, isEdit]);
 
-  // Handle referensi change
+  // ============================================================
+  // Efek untuk mengisi & mengunci jenis berdasarkan referensi
+  // ============================================================
+  useEffect(() => {
+    // Lewati jika masih dalam proses inisialisasi awal (agar data edit tidak tertimpa)
+    if (isInitialLoad) return;
+
+    const refId = form.kode_referensi_id;
+    if (!refId) {
+      // Jika tidak ada referensi, kosongkan dan unlock semua
+      setForm((prev) => ({
+        ...prev,
+        jenis_simpanan_id: "",
+        jenis_tabungan_id: "",
+        jenis_piutang_id: "",
+        jenis_pendapatan_id: "",
+      }));
+      setDisableSimpanan(false);
+      setDisableTabungan(false);
+      setDisablePiutang(false);
+      setDisablePendapatan(false);
+      return;
+    }
+
+    const ref = referensiList.find((r) => r.id === refId);
+    if (!ref) return;
+
+    // Update form berdasarkan referensi
+    setForm((prev) => ({
+      ...prev,
+      jenis_simpanan_id: ref.jenis_simpanan_id || "",
+      jenis_tabungan_id: ref.jenis_tabungan_id || "",
+      jenis_piutang_id: ref.jenis_piutang_id || "",
+      jenis_pendapatan_id: ref.jenis_pendapatan_id || "",
+    }));
+
+    // Set status disabled
+    setDisableSimpanan(!!ref.jenis_simpanan_id);
+    setDisableTabungan(!!ref.jenis_tabungan_id);
+    setDisablePiutang(!!ref.jenis_piutang_id);
+    setDisablePendapatan(!!ref.jenis_pendapatan_id);
+  }, [form.kode_referensi_id, referensiList, isInitialLoad]);
+
+  // ============================================================
+  // Handler referensi
+  // ============================================================
   const handleReferensiChange = (selected) => {
     const refId = selected?.value || "";
     setForm((prev) => ({ ...prev, kode_referensi_id: refId }));
@@ -224,7 +274,6 @@ export default function TransaksiFormPage() {
     });
   };
 
-  // Locking logic for extra rows
   function getLockedSideForExtraRows(rows) {
     const defaultSides = new Set(rows.filter((r) => r.isDefault).map((r) => r.tipe));
     return defaultSides.size === 1 ? [...defaultSides][0] : null;
@@ -326,12 +375,10 @@ export default function TransaksiFormPage() {
     );
   }
 
-  // Options for selects
   const referensiOptions = referensiList.map((r) => ({ value: r.id, label: r.label }));
   const anggotaOptions = anggotaList.map((a) => ({ value: a.id, label: `${a.no_anggota} - ${a.nama}` }));
   const akunOptions = akunList.map((a) => ({ value: a.id, label: `${a.kode_akun} - ${a.nama_akun}` }));
 
-  // Options for jenis
   const jenisSimpananOptions = jenisSimpananList.map((j) => ({ value: j.id, label: j.nama }));
   const jenisTabunganOptions = jenisTabunganList.map((j) => ({ value: j.id, label: j.nama }));
   const jenisPiutangOptions = jenisPiutangList.map((j) => ({ value: j.id, label: j.nama }));
@@ -455,8 +502,12 @@ export default function TransaksiFormPage() {
                   onChange={(opt) => setForm({ ...form, jenis_simpanan_id: opt?.value || "" })}
                   placeholder="Pilih jenis simpanan..."
                   isClearable
+                  isDisabled={disableSimpanan}
                   {...selectPortalProps}
                 />
+                {disableSimpanan && (
+                  <p className="text-xs text-blue-500 mt-1">🔒 Ditetapkan oleh referensi</p>
+                )}
               </div>
               <div>
                 <label className="block text-sm text-gray-600">Jenis Tabungan</label>
@@ -466,8 +517,12 @@ export default function TransaksiFormPage() {
                   onChange={(opt) => setForm({ ...form, jenis_tabungan_id: opt?.value || "" })}
                   placeholder="Pilih jenis tabungan..."
                   isClearable
+                  isDisabled={disableTabungan}
                   {...selectPortalProps}
                 />
+                {disableTabungan && (
+                  <p className="text-xs text-blue-500 mt-1">🔒 Ditetapkan oleh referensi</p>
+                )}
               </div>
               <div>
                 <label className="block text-sm text-gray-600">Jenis Piutang</label>
@@ -477,8 +532,12 @@ export default function TransaksiFormPage() {
                   onChange={(opt) => setForm({ ...form, jenis_piutang_id: opt?.value || "" })}
                   placeholder="Pilih jenis piutang..."
                   isClearable
+                  isDisabled={disablePiutang}
                   {...selectPortalProps}
                 />
+                {disablePiutang && (
+                  <p className="text-xs text-blue-500 mt-1">🔒 Ditetapkan oleh referensi</p>
+                )}
               </div>
               <div>
                 <label className="block text-sm text-gray-600">Jenis Pendapatan</label>
@@ -488,8 +547,12 @@ export default function TransaksiFormPage() {
                   onChange={(opt) => setForm({ ...form, jenis_pendapatan_id: opt?.value || "" })}
                   placeholder="Pilih jenis pendapatan..."
                   isClearable
+                  isDisabled={disablePendapatan}
                   {...selectPortalProps}
                 />
+                {disablePendapatan && (
+                  <p className="text-xs text-blue-500 mt-1">🔒 Ditetapkan oleh referensi</p>
+                )}
               </div>
             </div>
           </div>
@@ -507,15 +570,6 @@ export default function TransaksiFormPage() {
               </button>
             </div>
 
-            {/* 
-              Catatan fix dropdown:
-              overflow-x-auto tetap dipertahankan agar tabel bisa discroll
-              horizontal di layar sempit. Dropdown react-select TIDAK lagi
-              terpotong karena setiap <Select> di dalam tabel memakai
-              menuPortalTarget={document.body} + menuPosition="fixed"
-              (lihat selectPortalProps), sehingga menu di-render di luar
-              elemen overflow ini, langsung ke body.
-            */}
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className="bg-gray-50 text-gray-600">
@@ -628,7 +682,6 @@ export default function TransaksiFormPage() {
             </p>
           </div>
 
-          {/* Actions */}
           <div className="flex justify-end gap-3 pt-4 border-t">
             <button
               type="button"
