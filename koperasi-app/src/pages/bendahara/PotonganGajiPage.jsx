@@ -2,7 +2,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import DashboardLayout from "../../components/DashboardLayout";
 import api from "../../api/axios";
-import * as XLSX from "xlsx";
 import {
   Plus,
   Pencil,
@@ -11,7 +10,6 @@ import {
   Search,
   XCircle,
   Download,
-  Upload,
   FileSpreadsheet,
   User,
   AlertCircle,
@@ -24,6 +22,8 @@ import {
   Wallet,
   Users,
   Clock,
+  Building2,
+  Save,
 } from "lucide-react";
 
 const emptyFilters = { bulan: "", tahun: "" };
@@ -65,6 +65,23 @@ const FIELD_LABELS = [
   ["simpanan_pokok", "Simp. Pokok"],
 ];
 
+// Label pendek untuk kolom tabel batch-per-instansi (biar tabel tidak terlalu lebar)
+const BATCH_FIELD_LABELS = [
+  ["simpanan_wajib", "SW", "Simpanan Wajib"],
+  ["simpanan_sukarela", "SS", "Simpanan Sukarela"],
+  ["simpanan_pokok", "SP", "Simpanan Pokok"],
+  ["utang_barang_pokok", "UBP", "Utang Barang Pokok"],
+  ["utang_barang_jasa", "UBJ", "Utang Barang Jasa"],
+  ["utang_uang_menengah_pokok", "UMP", "Utang Uang Menengah Pokok"],
+  ["utang_uang_menengah_jasa", "UMJ", "Utang Uang Menengah Jasa"],
+  ["utang_uang_pendek_pokok", "UPP", "Utang Uang Pendek Pokok"],
+  ["utang_uang_pendek_jasa", "UPJ", "Utang Uang Pendek Jasa"],
+];
+
+function rowTotal(row) {
+  return BATCH_FIELD_LABELS.reduce((sum, [key]) => sum + (parseFloat(row[key]) || 0), 0);
+}
+
 export default function PotonganGajiPage() {
   // ─── State ──────────────────────────────────────────────────
   const [data, setData] = useState([]);
@@ -76,7 +93,7 @@ export default function PotonganGajiPage() {
   const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
   const [filterOpen, setFilterOpen] = useState(true);
 
-  // Modal form (tambah/edit manual)
+  // Modal form (tambah/edit manual per-anggota)
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [selectedAnggota, setSelectedAnggota] = useState(null);
@@ -88,14 +105,20 @@ export default function PotonganGajiPage() {
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [detailItem, setDetailItem] = useState(null);
 
-  // Modal import
-  const [importModalOpen, setImportModalOpen] = useState(false);
-  const [importFile, setImportFile] = useState(null);
-  const [importData, setImportData] = useState([]);
-  const [importing, setImporting] = useState(false);
+  // Modal input per instansi (batch)
+  const [instansiModalOpen, setInstansiModalOpen] = useState(false);
+  const [instansiOptions, setInstansiOptions] = useState([]);
+  const [selectedInstansi, setSelectedInstansi] = useState("");
+  const [instansiBulan, setInstansiBulan] = useState("");
+  const [instansiTahun, setInstansiTahun] = useState(new Date().getFullYear());
+  const [instansiAnggotaList, setInstansiAnggotaList] = useState([]);
+  const [loadingInstansiAnggota, setLoadingInstansiAnggota] = useState(false);
+  const [savingBatch, setSavingBatch] = useState(false);
+  const [instansiError, setInstansiError] = useState("");
 
   const [exporting, setExporting] = useState(false);
   const [processingId, setProcessingId] = useState(null);
+  const [processingAll, setProcessingAll] = useState(false);
 
   const isEditing = Boolean(editingId);
 
@@ -247,6 +270,33 @@ export default function PotonganGajiPage() {
     }
   };
 
+  // ─── Proses Semua ke Jurnal (untuk bulan/tahun yang difilter) ─
+  const handleProcessAll = async () => {
+    if (!appliedFilters.bulan || !appliedFilters.tahun) {
+      alert("Terapkan filter Bulan & Tahun terlebih dahulu (di panel Filter & Export).");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Proses SEMUA potongan yang belum diproses untuk ${appliedFilters.bulan} ${appliedFilters.tahun} ke jurnal?\n\nSetiap anggota akan dibuatkan transaksi terpisah (tidak digabung). Tindakan ini tidak bisa dibatalkan.`
+      )
+    )
+      return;
+    setProcessingAll(true);
+    try {
+      const { data } = await api.post("/potongan-gaji/process-all", {
+        bulan: appliedFilters.bulan,
+        tahun: appliedFilters.tahun,
+      });
+      alert(data.message);
+      fetchData(1, appliedFilters);
+    } catch (err) {
+      alert(err.response?.data?.message || "Gagal memproses semua potongan.");
+    } finally {
+      setProcessingAll(false);
+    }
+  };
+
   // ─── Delete ─────────────────────────────────────────────────
   const handleDelete = async (item) => {
     if (!window.confirm(`Yakin hapus potongan ${item.anggota?.nama || "anggota ini"}?`)) return;
@@ -255,63 +305,6 @@ export default function PotonganGajiPage() {
       fetchData(pagination.page, appliedFilters);
     } catch (err) {
       alert(err.response?.data?.message || "Gagal hapus.");
-    }
-  };
-
-  // ─── Import Excel ───────────────────────────────────────────
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setImportFile(file);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const bin = new Uint8Array(ev.target.result);
-      const workbook = XLSX.read(bin, { type: "array" });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const json = XLSX.utils.sheet_to_json(sheet);
-      setImportData(json);
-    };
-    reader.readAsArrayBuffer(file);
-  };
-
-  const handleImportSubmit = async (e) => {
-    e.preventDefault();
-    if (importData.length === 0) return;
-    setImporting(true);
-    try {
-      const parsed = importData.map((row) => ({
-        no_urut: row["No Urut"] || null,
-        no_anggota: row["No"] ? String(row["No"]).trim() : null,
-        nama: row["Nama"] ? String(row["Nama"]).trim() : null,
-        plafon: parseFloat(row["Plafon"]) || null,
-        jangka_waktu: row["JW"] ? String(row["JW"]).trim() : null,
-        angsuran_ke: parseInt(row["Ke"]) || null,
-        simpanan_wajib: parseFloat(row["Simp. Wajib"]) || 0,
-        simpanan_sukarela: parseFloat(row["Skrl"]) || 0,
-        utang_barang_pokok: parseFloat(row["Utang Brg. pokok"]) || 0,
-        utang_barang_jasa: parseFloat(row["Utang Brg. jasa"]) || 0,
-        utang_uang_menengah_pokok: parseFloat(row["Utang Uang menengah Pokok"]) || 0,
-        utang_uang_menengah_jasa: parseFloat(row["Utang Uang menengah Jasa 2.75%"]) || 0,
-        utang_uang_pendek_pokok: parseFloat(row["Utang Uang pendek Pokok"]) || 0,
-        utang_uang_pendek_jasa: parseFloat(row["Utang Uang pendek Jasa 2.75%"]) || 0,
-        simpanan_pokok: parseFloat(row["Simp. Pokok"]) || 0,
-      }));
-
-      const payload = {
-        bulan: appliedFilters.bulan || "Agustus",
-        tahun: parseInt(appliedFilters.tahun) || new Date().getFullYear(),
-        data: parsed,
-      };
-
-      await api.post("/potongan-gaji", payload);
-      setImportModalOpen(false);
-      setImportData([]);
-      setImportFile(null);
-      fetchData(1, appliedFilters);
-    } catch (err) {
-      alert(err.response?.data?.message || "Gagal import data.");
-    } finally {
-      setImporting(false);
     }
   };
 
@@ -359,6 +352,100 @@ export default function PotonganGajiPage() {
     }
   };
 
+  // ─── Input per Instansi (batch) ──────────────────────────────
+  const fetchInstansiOptions = useCallback(async () => {
+    try {
+      const { data } = await api.get("/potongan-gaji/instansi");
+      setInstansiOptions(data.data || []);
+    } catch (err) {
+      console.error(err);
+    }
+  }, []);
+
+  const openInstansiModal = () => {
+    setSelectedInstansi("");
+    setInstansiBulan(appliedFilters.bulan || "");
+    setInstansiTahun(appliedFilters.tahun || new Date().getFullYear());
+    setInstansiAnggotaList([]);
+    setInstansiError("");
+    setInstansiModalOpen(true);
+    if (instansiOptions.length === 0) fetchInstansiOptions();
+  };
+
+  const loadAnggotaByInstansi = useCallback(async (instansi, bulan, tahun) => {
+    if (!instansi || !bulan || !tahun) {
+      setInstansiAnggotaList([]);
+      return;
+    }
+    setLoadingInstansiAnggota(true);
+    setInstansiError("");
+    try {
+      const { data } = await api.get("/potongan-gaji/anggota-by-instansi", {
+        params: { instansi, bulan, tahun },
+      });
+      setInstansiAnggotaList(data.data || []);
+    } catch (err) {
+      setInstansiError(err.response?.data?.message || "Gagal mengambil data anggota.");
+      setInstansiAnggotaList([]);
+    } finally {
+      setLoadingInstansiAnggota(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (instansiModalOpen && selectedInstansi && instansiBulan && instansiTahun) {
+      loadAnggotaByInstansi(selectedInstansi, instansiBulan, instansiTahun);
+    } else if (instansiModalOpen) {
+      setInstansiAnggotaList([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedInstansi, instansiBulan, instansiTahun, instansiModalOpen]);
+
+  const handleInstansiRowChange = (anggotaId, key, value) => {
+    setInstansiAnggotaList((prev) =>
+      prev.map((r) => (r.anggota_id === anggotaId ? { ...r, [key]: value } : r))
+    );
+  };
+
+  const instansiGrandTotal = instansiAnggotaList.reduce((sum, r) => sum + rowTotal(r), 0);
+  const instansiRowsFilled = instansiAnggotaList.filter((r) => rowTotal(r) > 0).length;
+
+  const handleInstansiBatchSubmit = async () => {
+    setInstansiError("");
+    const editableRows = instansiAnggotaList.filter((r) => !r.is_processed && r.sumber !== "pinjaman");
+    const rowsToSend = editableRows
+      .filter((r) => rowTotal(r) > 0)
+      .map((r) => {
+        const payload = { anggota_id: r.anggota_id, keterangan: r.keterangan || "" };
+        BATCH_FIELD_LABELS.forEach(([key]) => {
+          payload[key] = parseFloat(r[key]) || 0;
+        });
+        return payload;
+      });
+
+    if (rowsToSend.length === 0) {
+      setInstansiError("Belum ada nilai yang diisi untuk anggota manapun.");
+      return;
+    }
+
+    setSavingBatch(true);
+    try {
+      const { data } = await api.post("/potongan-gaji/batch", {
+        instansi: selectedInstansi,
+        bulan: instansiBulan,
+        tahun: instansiTahun,
+        data: rowsToSend,
+      });
+      alert(data.message || "Berhasil disimpan.");
+      setInstansiModalOpen(false);
+      fetchData(1, appliedFilters);
+    } catch (err) {
+      setInstansiError(err.response?.data?.message || "Gagal menyimpan data.");
+    } finally {
+      setSavingBatch(false);
+    }
+  };
+
   // ─── Render ──────────────────────────────────────────────────
   return (
     <DashboardLayout>
@@ -370,13 +457,31 @@ export default function PotonganGajiPage() {
               <h2 className="text-xl font-semibold text-gray-800">Potongan Gaji</h2>
               <p className="text-sm text-gray-500">Rekap potongan dari pinjaman & utang manual per bulan</p>
             </div>
-            <button
-              onClick={openCreateModal}
-              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              <Plus size={16} />
-              Tambah Manual
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={handleProcessAll}
+                disabled={processingAll}
+                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                title="Proses semua potongan yang belum diproses untuk bulan/tahun yang sedang difilter"
+              >
+                {processingAll ? <Loader size={16} className="animate-spin" /> : <CheckCircle size={16} />}
+                Proses Semua
+              </button>
+              <button
+                onClick={openInstansiModal}
+                className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700"
+              >
+                <Building2 size={16} />
+                Input per Instansi
+              </button>
+              <button
+                onClick={openCreateModal}
+                className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                <Plus size={16} />
+                Tambah Manual
+              </button>
+            </div>
           </div>
         </div>
 
@@ -408,14 +513,14 @@ export default function PotonganGajiPage() {
           />
         </div>
 
-        {/* Filter & Import/Export */}
+        {/* Filter & Export */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           <button
             onClick={() => setFilterOpen(!filterOpen)}
             className="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition"
           >
             <span className="flex items-center gap-2 font-medium text-gray-700">
-              <Search size={18} className="text-gray-500" /> Filter & Import/Export
+              <Search size={18} className="text-gray-500" /> Filter & Export
             </span>
             {filterOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
           </button>
@@ -470,12 +575,6 @@ export default function PotonganGajiPage() {
                   <p className="text-xs font-semibold uppercase text-gray-500 flex items-center gap-2 mb-1">
                     <FileSpreadsheet size={14} className="text-green-600" /> Excel
                   </p>
-                  <button
-                    onClick={() => setImportModalOpen(true)}
-                    className="flex items-center justify-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700 w-full"
-                  >
-                    <Upload size={15} /> Import Excel
-                  </button>
                   <button
                     onClick={handleExportExcel}
                     disabled={exporting}
@@ -942,49 +1041,191 @@ export default function PotonganGajiPage() {
         </div>
       )}
 
-      {/* ─── MODAL IMPORT ──────────────────────────────────────── */}
-      {importModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-xl bg-white p-6">
-            <h3 className="text-lg font-semibold text-gray-800">Import Potongan Gaji</h3>
-            <p className="text-sm text-gray-500 mt-1">
-              Upload file Excel (.xlsx) dengan kolom sesuai template PKM SUDI. Data akan masuk sebagai
-              kategori <strong>Manual</strong> untuk bulan/tahun yang sedang difilter.
-            </p>
-            <form onSubmit={handleImportSubmit} className="mt-4 space-y-4">
-              <input
-                type="file"
-                accept=".xlsx,.xls"
-                onChange={handleFileChange}
-                className="w-full"
-              />
-              {importData.length > 0 && (
-                <p className="text-sm text-green-600">✓ {importData.length} baris data siap diimport.</p>
-              )}
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setImportModalOpen(false);
-                    setImportData([]);
-                    setImportFile(null);
-                  }}
-                  className="rounded-lg border px-4 py-2 text-sm"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  disabled={importing || importData.length === 0}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-60"
-                >
-                  {importing ? "Mengimport..." : "Import Data"}
-                </button>
+      {/* ─── MODAL INPUT PER INSTANSI (BATCH) ─────────────────── */}
+      {instansiModalOpen && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-white">
+          <div className="flex items-center justify-between border-b px-4 py-4 sm:px-8">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-800 sm:text-xl">Input Potongan per Instansi</h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Pilih instansi, semua anggota aktifnya akan muncul — isi simpanan/utang lalu simpan sekaligus.
+              </p>
+            </div>
+            <button onClick={() => setInstansiModalOpen(false)} className="rounded-lg p-2 text-gray-500 hover:bg-gray-100">
+              <X size={20} />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8 space-y-4">
+            {instansiError && (
+              <div className="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+                <AlertCircle size={15} className="mt-0.5 shrink-0" />
+                {instansiError}
               </div>
-            </form>
+            )}
+
+            {/* Pemilihan instansi / bulan / tahun */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-gray-50 rounded-lg p-4 border">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-500">Instansi</label>
+                <select
+                  value={selectedInstansi}
+                  onChange={(e) => setSelectedInstansi(e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm focus:border-purple-500 focus:outline-none"
+                >
+                  <option value="">Pilih instansi…</option>
+                  {instansiOptions.map((i) => (
+                    <option key={i} value={i}>{i}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-500">Bulan</label>
+                <select
+                  value={instansiBulan}
+                  onChange={(e) => setInstansiBulan(e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm focus:border-purple-500 focus:outline-none"
+                >
+                  <option value="">Pilih bulan</option>
+                  {BULAN_LIST.map((b) => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-500">Tahun</label>
+                <input
+                  type="number"
+                  value={instansiTahun}
+                  onChange={(e) => setInstansiTahun(e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm focus:border-purple-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Tabel anggota instansi */}
+            {loadingInstansiAnggota ? (
+              <div className="text-center py-10 text-gray-400">
+                <Loader className="animate-spin inline-block mr-2" size={20} /> Memuat anggota…
+              </div>
+            ) : !selectedInstansi || !instansiBulan || !instansiTahun ? (
+              <div className="text-center py-10 text-gray-400 text-sm">
+                Pilih instansi, bulan, dan tahun untuk menampilkan daftar anggota.
+              </div>
+            ) : instansiAnggotaList.length === 0 ? (
+              <div className="text-center py-10 text-gray-400 text-sm">
+                Tidak ada anggota aktif di instansi ini.
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between text-sm text-gray-500">
+                  <span>{instansiAnggotaList.length} anggota &middot; {instansiRowsFilled} baris sudah diisi</span>
+                  <span className="font-semibold text-green-700">Total: Rp {formatRupiah(instansiGrandTotal)}</span>
+                </div>
+                <div className="overflow-x-auto rounded-lg border">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-gray-50 text-gray-600">
+                      <tr>
+                        <th className="px-3 py-2 text-left sticky left-0 bg-gray-50 min-w-[180px]">Anggota</th>
+                        {BATCH_FIELD_LABELS.map(([key, short, full]) => (
+                          <th key={key} className="px-2 py-2 text-right whitespace-nowrap" title={full}>
+                            {short}
+                          </th>
+                        ))}
+                        <th className="px-3 py-2 text-right">Total</th>
+                        <th className="px-3 py-2 text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {instansiAnggotaList.map((row) => {
+                        const locked = row.is_processed || row.sumber === "pinjaman";
+                        return (
+                          <tr key={row.anggota_id} className={locked ? "bg-gray-50" : "hover:bg-gray-50"}>
+                            <td className="px-3 py-2 sticky left-0 bg-inherit">
+                              <p className="font-medium text-gray-800">{row.nama}</p>
+                              <p className="text-xs text-gray-400">{row.no_anggota}</p>
+                            </td>
+                            {BATCH_FIELD_LABELS.map(([key]) => (
+                              <td key={key} className="px-2 py-2">
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  disabled={locked}
+                                  value={row[key] ? Number(row[key]).toLocaleString("id-ID") : ""}
+                                  onChange={(e) => {
+                                    const raw = e.target.value.replace(/[^\d]/g, "");
+                                    handleInstansiRowChange(row.anggota_id, key, raw);
+                                  }}
+                                  placeholder="0"
+                                  className={`w-24 text-right border rounded px-2 py-1 text-sm focus:ring-2 focus:ring-purple-500 ${
+                                    locked ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""
+                                  }`}
+                                />
+                              </td>
+                            ))}
+                            <td className="px-3 py-2 text-right font-mono font-semibold text-green-700">
+                              {formatRupiah(rowTotal(row))}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              {row.is_processed ? (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+                                  Diproses
+                                </span>
+                              ) : row.sumber === "pinjaman" ? (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
+                                  Pinjaman
+                                </span>
+                              ) : row.sumber === "manual" ? (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+                                  Sudah diisi
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">
+                                  Belum diisi
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-gray-400">
+                  Baris berstatus <strong>Pinjaman</strong> atau <strong>Diproses</strong> tidak bisa diubah dari sini.
+                  Baris <strong>Sudah diisi</strong> (manual, belum diproses) akan diperbarui kalau nilainya diubah.
+                  Baris kosong akan dilewati otomatis.
+                </p>
+              </>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2 border-t px-4 py-4 sm:px-8">
+            <button
+              type="button"
+              onClick={() => setInstansiModalOpen(false)}
+              className="rounded-lg border px-5 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              onClick={handleInstansiBatchSubmit}
+              disabled={savingBatch || instansiAnggotaList.length === 0}
+              className="flex items-center gap-2 rounded-lg bg-purple-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-60"
+            >
+              {savingBatch ? (
+                "Menyimpan…"
+              ) : (
+                <>
+                  <Save size={16} /> Simpan Semua
+                </>
+              )}
+            </button>
           </div>
         </div>
       )}
+
     </DashboardLayout>
   );
 }

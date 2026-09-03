@@ -236,39 +236,28 @@ exports.update = async (req, res) => {
   }
 };
 
-// ─── Proses ke Jurnal (buat transaksi potongan) ─────────────
-exports.processToJurnal = async (req, res) => {
-  const t = await sequelize.transaction();
-  try {
-    const { id } = req.params; // id potongan
-    const potongan = await PotonganGaji.findByPk(id, {
-      include: [{ model: Anggota, as: "anggota" }],
-    });
-    if (!potongan) return res.status(404).json({ message: "Potongan tidak ditemukan." });
-    if (potongan.is_processed) {
-      return res.status(422).json({ message: "Potongan sudah diproses." });
-    }
-
-    // Ambil akun-akun yang diperlukan
-    // Akun Kas/Bank (untuk penerimaan) – asumsi akun kode 1102 (Kas Bank)
-    const akunKas = await Akun.findOne({ where: { kode_akun: "1102" } });
-    if (!akunKas) return res.status(422).json({ message: "Akun Kas Bank tidak ditemukan." });
-
-    // Ambil kode referensi untuk transaksi potongan gaji
-    let referensi = await KodeReferensi.findOne({ where: { kode: "POT-001" } });
-    if (!referensi) {
-      // Buat default jika belum ada
-      referensi = await KodeReferensi.create({
+async function buildJurnalForPotongan(potongan, userId, t) {
+  const akunKas = await Akun.findOne({ where: { kode_akun: "1102" }, transaction: t });
+  if (!akunKas) {
+    throw new Error("Akun Kas Bank (kode 1102) tidak ditemukan.");
+  }
+ 
+  let referensi = await KodeReferensi.findOne({ where: { kode: "POT-001" }, transaction: t });
+  if (!referensi) {
+    referensi = await KodeReferensi.create(
+      {
         kode: "POT-001",
         uraian_transaksi: "Potongan Gaji PKM SUDI",
         label: "Potongan Gaji",
         akun_debet: "Kas Bank",
         akun_kredit: "Piutang Anggota",
-      });
-    }
-
-    // Buat transaksi header
-    const transaksi = await Transaksi.create({
+      },
+      { transaction: t }
+    );
+  }
+ 
+  const transaksi = await Transaksi.create(
+    {
       no_transaksi: generateNoTransaksi(),
       kode_referensi_id: referensi.id,
       label: referensi.label,
@@ -282,93 +271,145 @@ exports.processToJurnal = async (req, res) => {
       anggota_id: potongan.anggota_id,
       anggota: potongan.anggota.nama,
       unit_usaha: "Simpan Pinjam",
-      user_id: req.user.id,
-    }, { transaction: t });
-
-    // Buat jurnal entries (multi-row)
-    // 1. Debet Kas Bank
-    await Jurnal.create({
+      user_id: userId,
+    },
+    { transaction: t }
+  );
+ 
+  await Jurnal.create(
+    {
       transaksi_id: transaksi.id,
       tanggal: new Date(),
       akun_id: akunKas.id,
       debet: potongan.total,
       kredit: 0,
       keterangan: `Penerimaan potongan ${potongan.anggota.nama}`,
-    }, { transaction: t });
-
-    // 2. Kredit ke masing-masing akun piutang (berdasarkan jenis)
-    // Mapping akun kredit
-    const kreditEntries = [];
-
-    // Simpanan Wajib → akun simpanan wajib (asumsi kode 2201)
-    if (potongan.simpanan_wajib > 0) {
-      const akun = await Akun.findOne({ where: { kode_akun: "2201" } });
-      if (akun) kreditEntries.push({ akun_id: akun.id, kredit: potongan.simpanan_wajib, ket: "Simpanan Wajib" });
+    },
+    { transaction: t }
+  );
+ 
+  // Mapping field potongan -> kode akun kredit (sama seperti processToJurnal lama)
+  const kreditMap = [
+    ["simpanan_wajib", "2201", "Simpanan Wajib"],
+    ["simpanan_sukarela", "2202", "Simpanan Sukarela"],
+    ["utang_barang_pokok", "1106", "Utang Barang Pokok"],
+    ["utang_barang_jasa", "1107", "Utang Barang Jasa"],
+    ["utang_uang_menengah_pokok", "1103", "Utang Uang Menengah Pokok"],
+    ["utang_uang_menengah_jasa", "1104", "Utang Uang Menengah Jasa"],
+    ["utang_uang_pendek_pokok", "1105", "Utang Uang Pendek Pokok"],
+    ["utang_uang_pendek_jasa", "1108", "Utang Uang Pendek Jasa"],
+    ["simpanan_pokok", "2200", "Simpanan Pokok"],
+  ];
+ 
+  for (const [field, kodeAkun, label] of kreditMap) {
+    const nilai = parseFloat(potongan[field]) || 0;
+    if (nilai > 0) {
+      const akun = await Akun.findOne({ where: { kode_akun: kodeAkun }, transaction: t });
+      if (akun) {
+        await Jurnal.create(
+          {
+            transaksi_id: transaksi.id,
+            tanggal: new Date(),
+            akun_id: akun.id,
+            debet: 0,
+            kredit: nilai,
+            keterangan: label,
+          },
+          { transaction: t }
+        );
+      }
     }
+  }
+ 
+  await potongan.update({ is_processed: true }, { transaction: t });
+  return transaksi;
+}
 
-    // Simpanan Sukarela → akun simpanan sukarela (kode 2202)
-    if (potongan.simpanan_sukarela > 0) {
-      const akun = await Akun.findOne({ where: { kode_akun: "2202" } });
-      if (akun) kreditEntries.push({ akun_id: akun.id, kredit: potongan.simpanan_sukarela, ket: "Simpanan Sukarela" });
+exports.processToJurnal = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { id } = req.params;
+    const potongan = await PotonganGaji.findByPk(id, {
+      include: [{ model: Anggota, as: "anggota" }],
+      transaction: t,
+    });
+    if (!potongan) {
+      await t.rollback();
+      return res.status(404).json({ message: "Potongan tidak ditemukan." });
     }
-
-    // Utang Barang Pokok → akun piutang barang (kode 1106)
-    if (potongan.utang_barang_pokok > 0) {
-      const akun = await Akun.findOne({ where: { kode_akun: "1106" } });
-      if (akun) kreditEntries.push({ akun_id: akun.id, kredit: potongan.utang_barang_pokok, ket: "Utang Barang Pokok" });
+    if (potongan.is_processed) {
+      await t.rollback();
+      return res.status(422).json({ message: "Potongan sudah diproses." });
     }
-    if (potongan.utang_barang_jasa > 0) {
-      const akun = await Akun.findOne({ where: { kode_akun: "1107" } });
-      if (akun) kreditEntries.push({ akun_id: akun.id, kredit: potongan.utang_barang_jasa, ket: "Utang Barang Jasa" });
-    }
-
-    // Utang Uang Menengah Pokok & Jasa
-    if (potongan.utang_uang_menengah_pokok > 0) {
-      const akun = await Akun.findOne({ where: { kode_akun: "1103" } });
-      if (akun) kreditEntries.push({ akun_id: akun.id, kredit: potongan.utang_uang_menengah_pokok, ket: "Utang Uang Menengah Pokok" });
-    }
-    if (potongan.utang_uang_menengah_jasa > 0) {
-      const akun = await Akun.findOne({ where: { kode_akun: "1104" } });
-      if (akun) kreditEntries.push({ akun_id: akun.id, kredit: potongan.utang_uang_menengah_jasa, ket: "Utang Uang Menengah Jasa" });
-    }
-
-    // Utang Uang Pendek Pokok & Jasa
-    if (potongan.utang_uang_pendek_pokok > 0) {
-      const akun = await Akun.findOne({ where: { kode_akun: "1105" } });
-      if (akun) kreditEntries.push({ akun_id: akun.id, kredit: potongan.utang_uang_pendek_pokok, ket: "Utang Uang Pendek Pokok" });
-    }
-    if (potongan.utang_uang_pendek_jasa > 0) {
-      const akun = await Akun.findOne({ where: { kode_akun: "1108" } });
-      if (akun) kreditEntries.push({ akun_id: akun.id, kredit: potongan.utang_uang_pendek_jasa, ket: "Utang Uang Pendek Jasa" });
-    }
-
-    // Simpanan Pokok
-    if (potongan.simpanan_pokok > 0) {
-      const akun = await Akun.findOne({ where: { kode_akun: "2200" } });
-      if (akun) kreditEntries.push({ akun_id: akun.id, kredit: potongan.simpanan_pokok, ket: "Simpanan Pokok" });
-    }
-
-    // Simpan kredit entries ke jurnal
-    for (const entry of kreditEntries) {
-      await Jurnal.create({
-        transaksi_id: transaksi.id,
-        tanggal: new Date(),
-        akun_id: entry.akun_id,
-        debet: 0,
-        kredit: entry.kredit,
-        keterangan: entry.ket,
-      }, { transaction: t });
-    }
-
-    // Tandai potongan sudah diproses
-    await potongan.update({ is_processed: true }, { transaction: t });
-
+ 
+    const transaksi = await buildJurnalForPotongan(potongan, req.user.id, t);
+ 
     await t.commit();
     return res.json({ message: "Potongan berhasil diproses ke jurnal.", data: transaksi });
   } catch (error) {
     await t.rollback();
     console.error(error);
-    return res.status(500).json({ message: "Gagal memproses potongan." });
+    return res.status(500).json({ message: error.message || "Gagal memproses potongan." });
+  }
+};
+ 
+exports.processAll = async (req, res) => {
+  try {
+    const { bulan, tahun, instansi } = req.body;
+    if (!bulan || !tahun) {
+      return res.status(422).json({ message: "Bulan dan tahun wajib diisi." });
+    }
+ 
+    const includeAnggota = { model: Anggota, as: "anggota", attributes: ["id", "nama", "instansi"] };
+    if (instansi) {
+      includeAnggota.where = { instansi };
+    }
+ 
+    const rows = await PotonganGaji.findAll({
+      where: { bulan, tahun, is_processed: false },
+      include: [includeAnggota],
+    });
+ 
+    if (rows.length === 0) {
+      return res.status(422).json({
+        message: `Tidak ada potongan yang belum diproses untuk ${bulan} ${tahun}${instansi ? ` (${instansi})` : ""}.`,
+      });
+    }
+ 
+    let success = 0;
+    let failed = 0;
+    let skippedZero = 0;
+    const errors = [];
+ 
+    for (const potongan of rows) {
+      if (parseFloat(potongan.total) <= 0) {
+        skippedZero++;
+        continue;
+      }
+      const t = await sequelize.transaction();
+      try {
+        await buildJurnalForPotongan(potongan, req.user.id, t);
+        await t.commit();
+        success++;
+      } catch (err) {
+        await t.rollback();
+        failed++;
+        errors.push({ anggota_id: potongan.anggota_id, nama: potongan.anggota?.nama, message: err.message });
+      }
+    }
+ 
+    return res.json({
+      message: `Selesai memproses ${bulan} ${tahun}: ${success} transaksi berhasil dibuat${
+        failed ? `, ${failed} gagal` : ""
+      }${skippedZero ? `, ${skippedZero} dilewati (total 0)` : ""}.`,
+      success,
+      failed,
+      skippedZero,
+      errors,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Gagal memproses semua potongan." });
   }
 };
 
@@ -385,5 +426,170 @@ exports.destroy = async (req, res) => {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: "Gagal menghapus potongan." });
+  }
+};
+
+const FIELDS_POTONGAN = [
+  "simpanan_wajib",
+  "simpanan_sukarela",
+  "simpanan_pokok",
+  "utang_barang_pokok",
+  "utang_barang_jasa",
+  "utang_uang_menengah_pokok",
+  "utang_uang_menengah_jasa",
+  "utang_uang_pendek_pokok",
+  "utang_uang_pendek_jasa",
+];
+ 
+// ─── Daftar instansi aktif (untuk dropdown) ─────────────────
+exports.listInstansi = async (req, res) => {
+  try {
+    const rows = await Anggota.findAll({
+      attributes: [[sequelize.fn("DISTINCT", sequelize.col("instansi")), "instansi"]],
+      where: { instansi: { [Op.ne]: null, [Op.ne]: "" }, status: "aktif" },
+      order: [["instansi", "ASC"]],
+      raw: true,
+    });
+    return res.json({ data: rows.map((r) => r.instansi).filter(Boolean) });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Gagal mengambil daftar instansi." });
+  }
+};
+ 
+exports.getAnggotaByInstansi = async (req, res) => {
+  try {
+    const { instansi, bulan, tahun } = req.query;
+    if (!instansi || !bulan || !tahun) {
+      return res.status(422).json({ message: "Instansi, bulan, dan tahun wajib diisi." });
+    }
+ 
+    const anggotaList = await Anggota.findAll({
+      where: { instansi, status: "aktif" },
+      attributes: ["id", "no_anggota", "nama", "instansi"],
+      order: [["nama", "ASC"]],
+    });
+ 
+    if (anggotaList.length === 0) {
+      return res.json({ data: [] });
+    }
+ 
+    const anggotaIds = anggotaList.map((a) => a.id);
+    const existingRows = await PotonganGaji.findAll({
+      where: { anggota_id: anggotaIds, bulan, tahun },
+    });
+    const existingMap = {};
+    existingRows.forEach((p) => {
+      existingMap[p.anggota_id] = p;
+    });
+ 
+    const data = anggotaList.map((a) => {
+      const p = existingMap[a.id];
+      const row = {
+        anggota_id: a.id,
+        no_anggota: a.no_anggota,
+        nama: a.nama,
+        potongan_id: p ? p.id : null,
+        sumber: p ? p.sumber : null,
+        is_processed: p ? !!p.is_processed : false,
+        keterangan: p ? p.keterangan || "" : "",
+      };
+      FIELDS_POTONGAN.forEach((f) => {
+        row[f] = p ? parseFloat(p[f]) || 0 : 0;
+      });
+      return row;
+    });
+ 
+    return res.json({ data });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Gagal mengambil data anggota per instansi." });
+  }
+};
+ 
+exports.batchStore = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { instansi, bulan, tahun, data } = req.body;
+    if (!instansi || !bulan || !tahun || !Array.isArray(data) || data.length === 0) {
+      await t.rollback();
+      return res.status(422).json({ message: "Instansi, bulan, tahun, dan data wajib diisi." });
+    }
+ 
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+ 
+    for (const row of data) {
+      if (!row.anggota_id) {
+        skipped++;
+        continue;
+      }
+ 
+      const total = FIELDS_POTONGAN.reduce((sum, f) => sum + (parseFloat(row[f]) || 0), 0);
+      if (total <= 0) {
+        skipped++;
+        continue;
+      }
+ 
+      const anggota = await Anggota.findByPk(row.anggota_id, { transaction: t });
+      if (!anggota || anggota.instansi !== instansi) {
+        skipped++;
+        continue;
+      }
+ 
+      const existing = await PotonganGaji.findOne({
+        where: { anggota_id: row.anggota_id, bulan, tahun },
+        transaction: t,
+      });
+ 
+      if (existing) {
+        // Jangan timpa entri otomatis dari pinjaman atau yang sudah diproses ke jurnal
+        if (existing.sumber === "pinjaman" || existing.is_processed) {
+          skipped++;
+          continue;
+        }
+        const updates = { keterangan: row.keterangan || existing.keterangan, total };
+        FIELDS_POTONGAN.forEach((f) => {
+          updates[f] = parseFloat(row[f]) || 0;
+        });
+        await existing.update(updates, { transaction: t });
+        updated++;
+      } else {
+        const maxUrut = await PotonganGaji.max("no_urut", {
+          where: { bulan, tahun },
+          transaction: t,
+        });
+        const payload = {
+          anggota_id: row.anggota_id,
+          bulan,
+          tahun,
+          no_urut: (maxUrut || 0) + 1,
+          sumber: "manual",
+          keterangan: row.keterangan || null,
+          total,
+          is_processed: false,
+        };
+        FIELDS_POTONGAN.forEach((f) => {
+          payload[f] = parseFloat(row[f]) || 0;
+        });
+        await PotonganGaji.create(payload, { transaction: t });
+        created++;
+      }
+    }
+ 
+    await t.commit();
+    return res.status(201).json({
+      message: `Berhasil disimpan untuk instansi ${instansi}: ${created} baru, ${updated} diperbarui${
+        skipped ? `, ${skipped} dilewati (kosong / sudah diproses / dari pinjaman)` : ""
+      }.`,
+      created,
+      updated,
+      skipped,
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error(error);
+    return res.status(500).json({ message: "Gagal menyimpan potongan per instansi." });
   }
 };
