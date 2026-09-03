@@ -968,102 +968,120 @@ exports.exportPdf = async (req, res) => {
       grandTotal += parseFloat(item.total) || 0;
     });
 
-    const doc = new PDFDocument({ margin: 40, size: [841.89, 595.28] }); // A4 Landscape
+    // ─── PERBAIKAN: margin 25 agar lebih luas ───
+    const doc = new PDFDocument({ margin: 25, size: [841.89, 595.28] }); // A4 Landscape
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=potongan-gaji-${Date.now()}.pdf`);
     doc.pipe(res);
 
-    const startX = 40;
-    let currentY = 40;
+    const startX = 25; // mulai dari margin kiri
+    let currentY = 25;
 
     // ── Kop Koperasi ──
     const logoPath = pengaturan?.logo_koperasi
       ? path.join(__dirname, "..", "..", "public", "uploads", "pengaturan", pengaturan.logo_koperasi)
       : null;
     if (logoPath && fs.existsSync(logoPath)) {
-      doc.image(logoPath, startX, currentY, { width: 60, height: 60 });
+      doc.image(logoPath, startX, currentY, { width: 50, height: 50 });
     }
 
     const namaKoperasi = pengaturan?.nama_koperasi || "KOPERASI KONSUMEN MITRA HUSADA SEJAHTERA";
     doc.fillColor("#000");
-    doc.fontSize(14).font("Helvetica-Bold").text(namaKoperasi, startX + 70, currentY + 5, {
+    doc.fontSize(12).font("Helvetica-Bold").text(namaKoperasi, startX + 60, currentY + 5, {
       width: 700,
       align: "center",
     });
 
-    doc.fontSize(8).font("Helvetica");
-    const infoY = currentY + 25;
+    doc.fontSize(7).font("Helvetica");
+    const infoY = currentY + 20;
     const infoLines = [
       `Nomor : ${pengaturan?.no_badan_hukum || "-"}`,
       `Tanggal : ${formatTanggalIndonesia(pengaturan?.tgl_badan_hukum)}`,
       pengaturan?.alamat_koperasi || "Alamat Belum Diatur",
     ];
     infoLines.forEach((line, i) => {
-      doc.text(line, startX + 70, infoY + i * 12, { width: 700, align: "center" });
+      doc.text(line, startX + 60, infoY + i * 10, { width: 700, align: "center" });
     });
 
-    currentY += 75;
-    doc.moveTo(startX, currentY).lineTo(startX + 750, currentY).lineWidth(3).stroke("#000");
+    currentY += 65;
+    doc.moveTo(startX, currentY).lineTo(startX + 790, currentY).lineWidth(2).stroke("#000");
     currentY += 2;
-    doc.moveTo(startX, currentY).lineTo(startX + 750, currentY).lineWidth(1).stroke("#000");
-    currentY += 15;
+    doc.moveTo(startX, currentY).lineTo(startX + 790, currentY).lineWidth(1).stroke("#000");
+    currentY += 12;
 
     // ── Judul ──
     const titleText = `POTONGAN BULAN ${bulan?.toUpperCase() || ""} ${tahun || ""}`;
-    doc.fontSize(11).font("Helvetica-Bold").text(titleText, startX, currentY, {
-      width: 750,
+    doc.fontSize(10).font("Helvetica-Bold").text(titleText, startX, currentY, {
+      width: 790,
       align: "center",
     });
-    currentY = doc.y + 12;
+    currentY = doc.y + 10;
 
     if (instansi) {
-      doc.fontSize(9).font("Helvetica").text(`Instansi: ${instansi}`, startX, currentY, {
-        width: 750,
+      doc.fontSize(8).font("Helvetica").text(`Instansi: ${instansi}`, startX, currentY, {
+        width: 790,
         align: "left",
       });
-      currentY = doc.y + 8;
+      currentY = doc.y + 6;
     }
 
-    // ── Header Tabel ──
-    const colWidths = [30, 30, 120, 50, 40, 35, 70, 60, 70, 65, 50, 70, 65, 70, 65, 70, 55];
+    // ── PERBAIKAN: lebar kolom baru (total = 790) ──
+    const colWidths = [
+      18,   // No
+      18,   // Urut
+      105,  // Nama
+      40,   // Plafon
+      22,   // JW
+      22,   // Ke
+      48,   // Simp. Wajib
+      48,   // Simp. Sukarela
+      52,   // Utang Barang Pokok
+      48,   // Utang Barang Jasa
+      58,   // Utang Uang Menengah Pokok
+      52,   // Utang Uang Menengah Jasa
+      52,   // Utang Uang Pendek Pokok
+      48,   // Utang Uang Pendek Jasa
+      48,   // Simpanan Pokok
+      55    // Total
+    ];
+    // Total = 18+18+105+40+22+22+48+48+52+48+58+52+52+48+48+55 = 790
+
     const headers = [
       "No", "Urut", "Nama", "Plafon", "JW", "Ke",
-      "Simp. Wajib", "Simp. Sukarela", "Utang Barang Pokok", "Utang Barang Jasa",
+      "Simp. Wajib", "Simp. Sukarela", "Utang Brg Pokok", "Utang Brg Jasa",
       "Utang Uang Menengah Pokok", "Utang Uang Menengah Jasa",
       "Utang Uang Pendek Pokok", "Utang Uang Pendek Jasa",
       "Simpanan Pokok", "Total"
     ];
 
     const drawHeader = (y) => {
-      const hY = y;
-      // Baris pertama: header
       let x = startX;
       for (let i = 0; i < headers.length; i++) {
-        doc.rect(x, hY, colWidths[i], 16).fill("#6c757d").stroke();
-        doc.fillColor("#fff").fontSize(6).font("Helvetica-Bold")
-          .text(headers[i], x + 2, hY + 4, {
-            width: colWidths[i] - 4,
+        doc.rect(x, y, colWidths[i], 12).fill("#6c757d").stroke();
+        doc.fillColor("#fff").fontSize(5.5).font("Helvetica-Bold")
+          .text(headers[i], x + 1, y + 2, {
+            width: colWidths[i] - 2,
             align: i === 2 ? "left" : "center"
           });
         x += colWidths[i];
       }
-      return hY + 16;
+      return y + 12;
     };
 
     let rowY = drawHeader(currentY);
-    const pageHeight = 520;
+    const pageHeight = 540; // area vertikal tersisa
 
     // ── Isi Data ──
     data.forEach((item, idx) => {
-      if (rowY + 16 > pageHeight) {
-        doc.addPage({ size: [841.89, 595.28], margin: 40 });
-        rowY = 40;
+      if (rowY + 12 > pageHeight) {
+        doc.addPage({ size: [841.89, 595.28], margin: 25 });
+        rowY = 25;
         rowY = drawHeader(rowY);
       }
 
       const y = rowY;
       let x = startX;
-      const rowHeight = 14;
+      const rowHeight = 11;
 
       // Warna baris bergantian
       const bgColor = idx % 2 === 0 ? "#ffffff" : "#f8f9fa";
@@ -1073,27 +1091,27 @@ exports.exportPdf = async (req, res) => {
         x += colWidths[i];
       }
 
-      doc.fillColor("#000").fontSize(6).font("Helvetica");
+      doc.fillColor("#000").fontSize(5.5).font("Helvetica");
 
       x = startX;
       // No
-      doc.text(String(idx + 1), x + 2, y + 2, { width: colWidths[0] - 4, align: "center" });
+      doc.text(String(idx + 1), x + 1, y + 1, { width: colWidths[0] - 2, align: "center" });
       x += colWidths[0];
       // Urut
-      doc.text(item.no_urut ? String(item.no_urut) : "", x + 2, y + 2, { width: colWidths[1] - 4, align: "center" });
+      doc.text(item.no_urut ? String(item.no_urut) : "", x + 1, y + 1, { width: colWidths[1] - 2, align: "center" });
       x += colWidths[1];
-      // Nama
-      const nama = item.anggota?.nama || "-";
-      doc.text(nama.substring(0, 30), x + 2, y + 2, { width: colWidths[2] - 4, align: "left" });
+      // Nama (potong jika terlalu panjang)
+      const nama = (item.anggota?.nama || "-").substring(0, 25);
+      doc.text(nama, x + 1, y + 1, { width: colWidths[2] - 2, align: "left" });
       x += colWidths[2];
       // Plafon
-      doc.text(item.plafon ? formatRupiah(item.plafon) : "", x + 2, y + 2, { width: colWidths[3] - 4, align: "right" });
+      doc.text(item.plafon ? formatRupiah(item.plafon) : "", x + 1, y + 1, { width: colWidths[3] - 2, align: "right" });
       x += colWidths[3];
       // JW
-      doc.text(item.jangka_waktu || "", x + 2, y + 2, { width: colWidths[4] - 4, align: "center" });
+      doc.text(item.jangka_waktu || "", x + 1, y + 1, { width: colWidths[4] - 2, align: "center" });
       x += colWidths[4];
       // Ke
-      doc.text(item.angsuran_ke ? String(item.angsuran_ke) : "", x + 2, y + 2, { width: colWidths[5] - 4, align: "center" });
+      doc.text(item.angsuran_ke ? String(item.angsuran_ke) : "", x + 1, y + 1, { width: colWidths[5] - 2, align: "center" });
       x += colWidths[5];
 
       // Field rincian
@@ -1106,34 +1124,34 @@ exports.exportPdf = async (req, res) => {
       for (let fi = 0; fi < fieldKeys.length; fi++) {
         const val = parseFloat(item[fieldKeys[fi]]) || 0;
         const display = val > 0 ? formatRupiah(val) : "";
-        doc.text(display, x + 2, y + 2, { width: colWidths[6 + fi] - 4, align: "right" });
+        doc.text(display, x + 1, y + 1, { width: colWidths[6 + fi] - 2, align: "right" });
         x += colWidths[6 + fi];
       }
 
       // Total
-      doc.text(formatRupiah(item.total), x + 2, y + 2, { width: colWidths[colWidths.length - 1] - 4, align: "right" });
+      doc.text(formatRupiah(item.total), x + 1, y + 1, { width: colWidths[colWidths.length - 1] - 2, align: "right" });
 
       rowY += rowHeight;
     });
 
     // ── Baris Total ──
     if (data.length > 0) {
-      if (rowY + 16 > pageHeight) {
-        doc.addPage({ size: [841.89, 595.28], margin: 40 });
-        rowY = 40;
+      if (rowY + 14 > pageHeight) {
+        doc.addPage({ size: [841.89, 595.28], margin: 25 });
+        rowY = 25;
         rowY = drawHeader(rowY);
       }
 
       const y = rowY;
       let x = startX;
-      const rowHeight = 16;
+      const rowHeight = 14;
 
       for (let i = 0; i < colWidths.length; i++) {
         doc.rect(x, y, colWidths[i], rowHeight).fill("#e9ecef").stroke();
         x += colWidths[i];
       }
 
-      doc.fillColor("#000").fontSize(7).font("Helvetica-Bold");
+      doc.fillColor("#000").fontSize(6).font("Helvetica-Bold");
       x = startX;
       doc.text("TOTAL", x + 2, y + 2, { width: colWidths[0] + colWidths[1] + colWidths[2] - 4, align: "center" });
       x += colWidths[0] + colWidths[1] + colWidths[2];
