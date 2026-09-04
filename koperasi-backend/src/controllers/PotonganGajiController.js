@@ -993,19 +993,11 @@ exports.exportPdf = async (req, res) => {
     const startX = marginX;
     const bottomLimit = pageHeight - 40;
 
-    // ── Resolusi path logo + DEBUG LOG ──
+    // ── Resolusi path logo ──
     const logoPath = pengaturan?.logo_koperasi
       ? path.join(__dirname, "../../public/uploads/pengaturan", pengaturan.logo_koperasi)
       : null;
     const logoExists = logoPath ? fs.existsSync(logoPath) : false;
-
-    console.log("=== DEBUG LOGO ===");
-    console.log("pengaturan ditemukan?:", !!pengaturan);
-    console.log("logo_koperasi (raw DB):", pengaturan?.logo_koperasi);
-    console.log("__dirname (lokasi file controller):", __dirname);
-    console.log("logoPath lengkap yang dicoba:", logoPath);
-    console.log("apakah file ada di disk server?:", logoExists);
-    console.log("==================");
 
     const namaKoperasi = pengaturan?.nama_koperasi || "KOPERASI KONSUMEN MITRA HUSADA SEJAHTERA";
 
@@ -1093,9 +1085,9 @@ exports.exportPdf = async (req, res) => {
       "Simpanan\nPokok", "Total",
     ];
 
-    const HEADER_H = 24;
+    const HEADER_H = 32;
     const ROW_H = 18;
-    const HEADER_FONT = 7.5;
+    const HEADER_FONT = 7;
     const BODY_FONT = 7.5;
 
     const drawHeader = (y) => {
@@ -1106,7 +1098,7 @@ exports.exportPdf = async (req, res) => {
           .fillColor("#fff")
           .fontSize(HEADER_FONT)
           .font("Helvetica-Bold")
-          .text(headers[i], x + 2, y + 3, {
+          .text(headers[i], x + 2, y + 2, {
             width: colWidths[i] - 4,
             align: i === 2 ? "left" : "center",
           });
