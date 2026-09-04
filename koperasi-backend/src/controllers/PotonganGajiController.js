@@ -999,6 +999,14 @@ exports.exportPdf = async (req, res) => {
     const logoPath = pengaturan?.logo_koperasi
       ? path.join(__dirname, "../../public/uploads/pengaturan", pengaturan.logo_koperasi)
       : null;
+    
+    console.log("=== DEBUG LOGO ===");
+    console.log("pengaturan ditemukan?:", !!pengaturan);
+    console.log("logo_koperasi (raw DB):", pengaturan?.logo_koperasi);
+    console.log("__dirname:", __dirname);
+    console.log("logoPath lengkap:", logoPath);
+    console.log("file ada di disk?:", logoPath ? fs.existsSync(logoPath) : "logoPath null");
+    console.log("==================");
 
     let logoLoaded = false;
     if (logoPath && fs.existsSync(logoPath)) {
