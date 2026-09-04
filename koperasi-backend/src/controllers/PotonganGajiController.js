@@ -993,10 +993,20 @@ exports.exportPdf = async (req, res) => {
     const startX = marginX;
     const bottomLimit = pageHeight - 40;
 
+    // ── Resolusi path logo + DEBUG LOG ──
     const logoPath = pengaturan?.logo_koperasi
       ? path.join(__dirname, "../../public/uploads/pengaturan", pengaturan.logo_koperasi)
       : null;
     const logoExists = logoPath ? fs.existsSync(logoPath) : false;
+
+    console.log("=== DEBUG LOGO ===");
+    console.log("pengaturan ditemukan?:", !!pengaturan);
+    console.log("logo_koperasi (raw DB):", pengaturan?.logo_koperasi);
+    console.log("__dirname (lokasi file controller):", __dirname);
+    console.log("logoPath lengkap yang dicoba:", logoPath);
+    console.log("apakah file ada di disk server?:", logoExists);
+    console.log("==================");
+
     const namaKoperasi = pengaturan?.nama_koperasi || "KOPERASI KONSUMEN MITRA HUSADA SEJAHTERA";
 
     // ── Fungsi gambar kop surat + judul + nama instansi, return Y setelah kop ──
@@ -1009,7 +1019,7 @@ exports.exportPdf = async (req, res) => {
           doc.image(logoPath, startX, y, { width: 55, height: 55 });
           logoLoaded = true;
         } catch (err) {
-          console.warn("Logo tidak bisa dimuat:", err.message);
+          console.error("Logo GAGAL dimuat di doc.image(), error lengkap:", err);
         }
       }
 
