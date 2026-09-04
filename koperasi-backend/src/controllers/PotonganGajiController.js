@@ -969,7 +969,7 @@ exports.exportPdf = async (req, res) => {
       grandTotal += parseFloat(item.total) || 0;
     });
 
-    // Ambil bulan/tahun aktual dari data jika query kosong (misal export "semua")
+    // ── Tentukan judul periode (fallback jika query bulan/tahun kosong) ──
     const bulanTahunSet = new Set(data.map((d) => `${d.bulan}|${d.tahun}`));
     const isSinglePeriode = bulanTahunSet.size === 1;
     let judulPeriode;
@@ -982,14 +982,14 @@ exports.exportPdf = async (req, res) => {
       judulPeriode = "REKAP POTONGAN GAJI (SEMUA PERIODE)";
     }
 
-    // ── Buat PDF ──
-    const doc = new PDFDocument({ margin: 20, size: [841.89, 595.28], layout: "landscape" }); // A4 landscape
+    // ── Buat PDF (A4 Landscape) ──
+    const doc = new PDFDocument({ margin: 20, size: "A4", layout: "landscape" });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=potongan-gaji-${Date.now()}.pdf`);
     doc.pipe(res);
 
-    const pageWidth = 841.89;
-    const pageHeight = 595.28;
+    const pageWidth = 841.89;   // lebar A4 landscape
+    const pageHeight = 595.28;  // tinggi A4 landscape
     const marginX = 20;
     const contentWidth = pageWidth - marginX * 2; // ≈ 801.89
     const startX = marginX;
@@ -1058,25 +1058,25 @@ exports.exportPdf = async (req, res) => {
     // ── Lebar kolom (total ≈ 776, muat dalam contentWidth ≈ 801.89) ──
     const colWidths = [
       20,  // No
-      20,  // Urut
-      110, // Nama
-      45,  // Plafon
-      25,  // JW
-      25,  // Ke
-      50,  // Simp. Wajib
-      50,  // Simp. Sukarela
-      55,  // Utang Barang Pokok
-      50,  // Utang Barang Jasa
-      58,  // Utang Uang Menengah Pokok
-      55,  // Utang Uang Menengah Jasa
-      55,  // Utang Uang Pendek Pokok
-      50,  // Utang Uang Pendek Jasa
-      50,  // Simpanan Pokok
+      45,  // No. Anggota
+      105, // Nama
+      42,  // Plafon
+      22,  // JW
+      22,  // Ke
+      48,  // Simp. Wajib
+      48,  // Simp. Sukarela
+      52,  // Utang Barang Pokok
+      48,  // Utang Barang Jasa
+      55,  // Utang Uang Menengah Pokok
+      52,  // Utang Uang Menengah Jasa
+      52,  // Utang Uang Pendek Pokok
+      48,  // Utang Uang Pendek Jasa
+      48,  // Simpanan Pokok
       58,  // Total
     ];
 
     const headers = [
-      "No", "Urut", "Nama", "Plafon", "JW", "Ke",
+      "No", "No.\nAnggota", "Nama", "Plafon", "JW", "Ke",
       "Simp.\nWajib", "Simp.\nSukarela", "Utang Brg\nPokok", "Utang Brg\nJasa",
       "Utang Uang\nMenengah Pokok", "Utang Uang\nMenengah Jasa",
       "Utang Uang\nPendek Pokok", "Utang Uang\nPendek Jasa",
@@ -1111,7 +1111,7 @@ exports.exportPdf = async (req, res) => {
     // ── Isi Data ──
     data.forEach((item, idx) => {
       if (rowY + ROW_H > bottomLimit) {
-        doc.addPage({ size: [841.89, 595.28], margin: 20, layout: "landscape" });
+        doc.addPage({ size: "A4", margin: 20, layout: "landscape" });
         rowY = 20;
         rowY = drawHeader(rowY);
       }
@@ -1134,8 +1134,8 @@ exports.exportPdf = async (req, res) => {
       };
 
       cellText(String(idx + 1), 0, "center");
-      cellText(item.no_urut ? String(item.no_urut) : "", 1, "center");
-      cellText((item.anggota?.nama || "-").substring(0, 28), 2, "left");
+      cellText(item.anggota?.no_anggota || "-", 1, "center");
+      cellText((item.anggota?.nama || "-").substring(0, 26), 2, "left");
       cellText(item.plafon ? formatRupiah(item.plafon) : "", 3, "right");
       cellText(item.jangka_waktu || "", 4, "center");
       cellText(item.angsuran_ke ? String(item.angsuran_ke) : "", 5, "center");
@@ -1154,7 +1154,7 @@ exports.exportPdf = async (req, res) => {
     // ── Baris Total ──
     if (data.length > 0) {
       if (rowY + ROW_H + 4 > bottomLimit) {
-        doc.addPage({ size: [841.89, 595.28], margin: 20, layout: "landscape" });
+        doc.addPage({ size: "A4", margin: 20, layout: "landscape" });
         rowY = 20;
         rowY = drawHeader(rowY);
       }
@@ -1170,7 +1170,8 @@ exports.exportPdf = async (req, res) => {
 
       doc.fillColor("#000").fontSize(8).font("Helvetica-Bold");
       x = startX;
-      const labelWidth = colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5];
+      const labelWidth =
+        colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5];
       doc.text("TOTAL", x + 3, y + 5, { width: labelWidth - 6, align: "center" });
       x += labelWidth;
 
