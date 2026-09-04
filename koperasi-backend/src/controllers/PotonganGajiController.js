@@ -945,7 +945,7 @@ exports.exportPdf = async (req, res) => {
 
     const pengaturan = await PengaturanWebsite.findOne();
 
-    // ── Siapkan totals ──
+    // ── Field config ──
     const fieldKeys = [
       "simpanan_wajib",
       "simpanan_sukarela",
@@ -957,17 +957,6 @@ exports.exportPdf = async (req, res) => {
       "utang_uang_pendek_jasa",
       "simpanan_pokok",
     ];
-
-    const totals = {};
-    fieldKeys.forEach((key) => (totals[key] = 0));
-    let grandTotal = 0;
-
-    data.forEach((item) => {
-      fieldKeys.forEach((key) => {
-        totals[key] += parseFloat(item[key]) || 0;
-      });
-      grandTotal += parseFloat(item.total) || 0;
-    });
 
     // ── Tentukan judul periode (fallback jika query bulan/tahun kosong) ──
     const bulanTahunSet = new Set(data.map((d) => `${d.bulan}|${d.tahun}`));
@@ -982,86 +971,89 @@ exports.exportPdf = async (req, res) => {
       judulPeriode = "REKAP POTONGAN GAJI (SEMUA PERIODE)";
     }
 
+    // ── Kelompokkan data per instansi ──
+    const groupsMap = new Map();
+    data.forEach((item) => {
+      const namaInstansi = item.anggota?.instansi || "Tanpa Instansi";
+      if (!groupsMap.has(namaInstansi)) groupsMap.set(namaInstansi, []);
+      groupsMap.get(namaInstansi).push(item);
+    });
+    const groups = [...groupsMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
     // ── Buat PDF (A4 Landscape) ──
     const doc = new PDFDocument({ margin: 20, size: "A4", layout: "landscape" });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=potongan-gaji-${Date.now()}.pdf`);
     doc.pipe(res);
 
-    const pageWidth = 841.89;   // lebar A4 landscape
-    const pageHeight = 595.28;  // tinggi A4 landscape
+    const pageWidth = 841.89;
+    const pageHeight = 595.28;
     const marginX = 20;
-    const contentWidth = pageWidth - marginX * 2; // ≈ 801.89
+    const contentWidth = pageWidth - marginX * 2;
     const startX = marginX;
-    let currentY = 20;
+    const bottomLimit = pageHeight - 40;
 
-    // ── Kop Koperasi ──
     const logoPath = pengaturan?.logo_koperasi
       ? path.join(__dirname, "../../public/uploads/pengaturan", pengaturan.logo_koperasi)
       : null;
-    
-    console.log("=== DEBUG LOGO ===");
-    console.log("pengaturan ditemukan?:", !!pengaturan);
-    console.log("logo_koperasi (raw DB):", pengaturan?.logo_koperasi);
-    console.log("__dirname:", __dirname);
-    console.log("logoPath lengkap:", logoPath);
-    console.log("file ada di disk?:", logoPath ? fs.existsSync(logoPath) : "logoPath null");
-    console.log("==================");
-
-    let logoLoaded = false;
-    if (logoPath && fs.existsSync(logoPath)) {
-      try {
-        doc.image(logoPath, startX, currentY, { width: 55, height: 55 });
-        logoLoaded = true;
-      } catch (err) {
-        console.warn("Logo tidak bisa dimuat:", err.message);
-      }
-    }
-
-    const leftOffset = logoLoaded ? 65 : 0;
+    const logoExists = logoPath ? fs.existsSync(logoPath) : false;
     const namaKoperasi = pengaturan?.nama_koperasi || "KOPERASI KONSUMEN MITRA HUSADA SEJAHTERA";
-    doc.fillColor("#000");
-    doc.fontSize(15).font("Helvetica-Bold").text(namaKoperasi, startX + leftOffset, currentY + 4, {
-      width: contentWidth - leftOffset,
-      align: "center",
-    });
 
-    doc.fontSize(8.5).font("Helvetica");
-    const infoY = currentY + 26;
-    const infoLines = [
-      `Nomor : ${pengaturan?.no_badan_hukum || "-"}`,
-      `Tanggal : ${formatTanggalIndonesia(pengaturan?.tgl_badan_hukum)}`,
-      pengaturan?.alamat_koperasi || "Alamat Belum Diatur",
-    ];
-    infoLines.forEach((line, i) => {
-      doc.text(line, startX + leftOffset, infoY + i * 12, {
+    // ── Fungsi gambar kop surat + judul + nama instansi, return Y setelah kop ──
+    const drawKopAndTitle = (namaInstansi) => {
+      let y = 20;
+      let logoLoaded = false;
+
+      if (logoExists) {
+        try {
+          doc.image(logoPath, startX, y, { width: 55, height: 55 });
+          logoLoaded = true;
+        } catch (err) {
+          console.warn("Logo tidak bisa dimuat:", err.message);
+        }
+      }
+
+      const leftOffset = logoLoaded ? 65 : 0;
+      doc.fillColor("#000");
+      doc.fontSize(15).font("Helvetica-Bold").text(namaKoperasi, startX + leftOffset, y + 4, {
         width: contentWidth - leftOffset,
         align: "center",
       });
-    });
 
-    currentY += 75;
-    doc.moveTo(startX, currentY).lineTo(startX + contentWidth, currentY).lineWidth(2).stroke("#000");
-    currentY += 3;
-    doc.moveTo(startX, currentY).lineTo(startX + contentWidth, currentY).lineWidth(1).stroke("#000");
-    currentY += 14;
+      doc.fontSize(8.5).font("Helvetica");
+      const infoY = y + 26;
+      const infoLines = [
+        `Nomor : ${pengaturan?.no_badan_hukum || "-"}`,
+        `Tanggal : ${formatTanggalIndonesia(pengaturan?.tgl_badan_hukum)}`,
+        pengaturan?.alamat_koperasi || "Alamat Belum Diatur",
+      ];
+      infoLines.forEach((line, i) => {
+        doc.text(line, startX + leftOffset, infoY + i * 12, {
+          width: contentWidth - leftOffset,
+          align: "center",
+        });
+      });
 
-    // ── Judul ──
-    doc.fillColor("#000").fontSize(12).font("Helvetica-Bold").text(judulPeriode, startX, currentY, {
-      width: contentWidth,
-      align: "center",
-    });
-    currentY = doc.y + 4;
+      y += 75;
+      doc.moveTo(startX, y).lineTo(startX + contentWidth, y).lineWidth(2).stroke("#000");
+      y += 3;
+      doc.moveTo(startX, y).lineTo(startX + contentWidth, y).lineWidth(1).stroke("#000");
+      y += 14;
 
-    if (instansi) {
-      doc.fontSize(9).font("Helvetica-Bold").text(`Instansi: ${instansi}`, startX, currentY, {
+      doc.fillColor("#000").fontSize(12).font("Helvetica-Bold").text(judulPeriode, startX, y, {
+        width: contentWidth,
+        align: "center",
+      });
+      y = doc.y + 4;
+
+      doc.fontSize(9).font("Helvetica-Bold").text(`Instansi: ${namaInstansi}`, startX, y, {
         width: contentWidth,
         align: "left",
       });
-      currentY = doc.y + 8;
-    } else {
-      currentY += 8;
-    }
+      y = doc.y + 8;
+
+      return y;
+    };
 
     // ── Lebar kolom (total ≈ 776, muat dalam contentWidth ≈ 801.89) ──
     const colWidths = [
@@ -1113,54 +1105,66 @@ exports.exportPdf = async (req, res) => {
       return y + HEADER_H;
     };
 
-    let rowY = drawHeader(currentY);
-    const bottomLimit = pageHeight - 40;
-
-    // ── Isi Data ──
-    data.forEach((item, idx) => {
-      if (rowY + ROW_H > bottomLimit) {
+    // ── Loop tiap instansi → halaman baru per instansi ──
+    groups.forEach(([namaInstansi, rows], groupIdx) => {
+      if (groupIdx > 0) {
         doc.addPage({ size: "A4", margin: 20, layout: "landscape" });
-        rowY = 20;
-        rowY = drawHeader(rowY);
       }
 
-      const y = rowY;
-      let x = startX;
-      const bgColor = idx % 2 === 0 ? "#ffffff" : "#f1f3f5";
+      let rowY = drawKopAndTitle(namaInstansi);
+      rowY = drawHeader(rowY);
 
-      for (let i = 0; i < colWidths.length; i++) {
-        doc.rect(x, y, colWidths[i], ROW_H).fill(bgColor).stroke("#dee2e6");
-        x += colWidths[i];
-      }
+      // Subtotal khusus instansi ini
+      const subtotal = {};
+      fieldKeys.forEach((k) => (subtotal[k] = 0));
+      let subtotalGrand = 0;
 
-      doc.fillColor("#000").fontSize(BODY_FONT).font("Helvetica");
+      rows.forEach((item, idx) => {
+        if (rowY + ROW_H > bottomLimit) {
+          doc.addPage({ size: "A4", margin: 20, layout: "landscape" });
+          rowY = 20;
+          rowY = drawHeader(rowY);
+        }
 
-      x = startX;
-      const cellText = (text, i, align = "right") => {
-        doc.text(text, x + 3, y + 5, { width: colWidths[i] - 6, align });
-        x += colWidths[i];
-      };
+        const y = rowY;
+        let x = startX;
+        const bgColor = idx % 2 === 0 ? "#ffffff" : "#f1f3f5";
 
-      cellText(String(idx + 1), 0, "center");
-      cellText(item.anggota?.no_anggota || "-", 1, "center");
-      cellText((item.anggota?.nama || "-").substring(0, 26), 2, "left");
-      cellText(item.plafon ? formatRupiah(item.plafon) : "", 3, "right");
-      cellText(item.jangka_waktu || "", 4, "center");
-      cellText(item.angsuran_ke ? String(item.angsuran_ke) : "", 5, "center");
+        for (let i = 0; i < colWidths.length; i++) {
+          doc.rect(x, y, colWidths[i], ROW_H).fill(bgColor).stroke("#dee2e6");
+          x += colWidths[i];
+        }
 
-      fieldKeys.forEach((key, fi) => {
-        const val = parseFloat(item[key]) || 0;
-        cellText(val > 0 ? formatRupiah(val) : "", 6 + fi, "right");
+        doc.fillColor("#000").fontSize(BODY_FONT).font("Helvetica");
+
+        x = startX;
+        const cellText = (text, i, align = "right") => {
+          doc.text(text, x + 3, y + 5, { width: colWidths[i] - 6, align });
+          x += colWidths[i];
+        };
+
+        cellText(String(idx + 1), 0, "center");
+        cellText(item.anggota?.no_anggota || "-", 1, "center");
+        cellText((item.anggota?.nama || "-").substring(0, 26), 2, "left");
+        cellText(item.plafon ? formatRupiah(item.plafon) : "", 3, "right");
+        cellText(item.jangka_waktu || "", 4, "center");
+        cellText(item.angsuran_ke ? String(item.angsuran_ke) : "", 5, "center");
+
+        fieldKeys.forEach((key, fi) => {
+          const val = parseFloat(item[key]) || 0;
+          subtotal[key] += val;
+          cellText(val > 0 ? formatRupiah(val) : "", 6 + fi, "right");
+        });
+
+        subtotalGrand += parseFloat(item.total) || 0;
+
+        doc.font("Helvetica-Bold");
+        cellText(formatRupiah(item.total), 15, "right");
+
+        rowY += ROW_H;
       });
 
-      doc.font("Helvetica-Bold");
-      cellText(formatRupiah(item.total), 15, "right");
-
-      rowY += ROW_H;
-    });
-
-    // ── Baris Total ──
-    if (data.length > 0) {
+      // ── Baris Subtotal Instansi ──
       if (rowY + ROW_H + 4 > bottomLimit) {
         doc.addPage({ size: "A4", margin: 20, layout: "landscape" });
         rowY = 20;
@@ -1180,29 +1184,29 @@ exports.exportPdf = async (req, res) => {
       x = startX;
       const labelWidth =
         colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5];
-      doc.text("TOTAL", x + 3, y + 5, { width: labelWidth - 6, align: "center" });
+      doc.text(`TOTAL ${namaInstansi}`, x + 3, y + 5, { width: labelWidth - 6, align: "center" });
       x += labelWidth;
 
       fieldKeys.forEach((key, fi) => {
-        const val = totals[key] || 0;
+        const val = subtotal[key] || 0;
         const display = val > 0 ? formatRupiah(val) : "";
         doc.text(display, x + 3, y + 5, { width: colWidths[6 + fi] - 6, align: "right" });
         x += colWidths[6 + fi];
       });
 
-      doc.text(formatRupiah(grandTotal), x + 3, y + 5, { width: colWidths[15] - 6, align: "right" });
+      doc.text(formatRupiah(subtotalGrand), x + 3, y + 5, { width: colWidths[15] - 6, align: "right" });
       rowY += totalRowH;
-    }
 
-    // ── Footer tanggal cetak ──
-    doc
-      .fontSize(7)
-      .font("Helvetica-Oblique")
-      .fillColor("#555")
-      .text(`Dicetak: ${formatTanggalIndonesia(new Date())}`, startX, rowY + 10, {
-        width: contentWidth,
-        align: "right",
-      });
+      // ── Footer tanggal cetak per halaman instansi ──
+      doc
+        .fontSize(7)
+        .font("Helvetica-Oblique")
+        .fillColor("#555")
+        .text(`Dicetak: ${formatTanggalIndonesia(new Date())}`, startX, rowY + 10, {
+          width: contentWidth,
+          align: "right",
+        });
+    });
 
     doc.end();
   } catch (error) {
