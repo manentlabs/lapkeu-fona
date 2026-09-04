@@ -955,222 +955,245 @@ exports.exportPdf = async (req, res) => {
       "utang_uang_menengah_jasa",
       "utang_uang_pendek_pokok",
       "utang_uang_pendek_jasa",
-      "simpanan_pokok"
+      "simpanan_pokok",
     ];
 
     const totals = {};
-    fieldKeys.forEach(key => totals[key] = 0);
+    fieldKeys.forEach((key) => (totals[key] = 0));
     let grandTotal = 0;
 
-    data.forEach(item => {
-      fieldKeys.forEach(key => {
+    data.forEach((item) => {
+      fieldKeys.forEach((key) => {
         totals[key] += parseFloat(item[key]) || 0;
       });
       grandTotal += parseFloat(item.total) || 0;
     });
 
+    // Ambil bulan/tahun aktual dari data jika query kosong (misal export "semua")
+    const bulanTahunSet = new Set(data.map((d) => `${d.bulan}|${d.tahun}`));
+    const isSinglePeriode = bulanTahunSet.size === 1;
+    let judulPeriode;
+    if (bulan && tahun) {
+      judulPeriode = `POTONGAN BULAN ${String(bulan).toUpperCase()} ${tahun}`;
+    } else if (isSinglePeriode) {
+      const [b, y] = [...bulanTahunSet][0].split("|");
+      judulPeriode = `POTONGAN BULAN ${String(b).toUpperCase()} ${y}`;
+    } else {
+      judulPeriode = "REKAP POTONGAN GAJI (SEMUA PERIODE)";
+    }
+
     // ── Buat PDF ──
-    const doc = new PDFDocument({ margin: 20, size: [841.89, 595.28] }); // A4 landscape
+    const doc = new PDFDocument({ margin: 20, size: [841.89, 595.28], layout: "landscape" }); // A4 landscape
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=potongan-gaji-${Date.now()}.pdf`);
     doc.pipe(res);
 
-    const startX = 20;
+    const pageWidth = 841.89;
+    const pageHeight = 595.28;
+    const marginX = 20;
+    const contentWidth = pageWidth - marginX * 2; // ≈ 801.89
+    const startX = marginX;
     let currentY = 20;
 
     // ── Kop Koperasi ──
-    // Perbaiki path logo: gunakan path absolut dari root proyek
     const logoPath = pengaturan?.logo_koperasi
       ? path.join(__dirname, "../../public/uploads/pengaturan", pengaturan.logo_koperasi)
       : null;
 
-    // Coba cari di beberapa lokasi jika tidak ditemukan
     let logoLoaded = false;
     if (logoPath && fs.existsSync(logoPath)) {
       try {
-        doc.image(logoPath, startX, currentY, { width: 50, height: 50 });
+        doc.image(logoPath, startX, currentY, { width: 55, height: 55 });
         logoLoaded = true;
       } catch (err) {
         console.warn("Logo tidak bisa dimuat:", err.message);
       }
     }
 
-    // Jika logo tidak ada, kita lewati
-    const leftOffset = logoLoaded ? 60 : 0;
+    const leftOffset = logoLoaded ? 65 : 0;
     const namaKoperasi = pengaturan?.nama_koperasi || "KOPERASI KONSUMEN MITRA HUSADA SEJAHTERA";
     doc.fillColor("#000");
-    doc.fontSize(12).font("Helvetica-Bold").text(namaKoperasi, startX + leftOffset, currentY + 5, {
-      width: 750 - leftOffset,
+    doc.fontSize(15).font("Helvetica-Bold").text(namaKoperasi, startX + leftOffset, currentY + 4, {
+      width: contentWidth - leftOffset,
       align: "center",
     });
 
-    doc.fontSize(7).font("Helvetica");
-    const infoY = currentY + 22;
+    doc.fontSize(8.5).font("Helvetica");
+    const infoY = currentY + 26;
     const infoLines = [
       `Nomor : ${pengaturan?.no_badan_hukum || "-"}`,
       `Tanggal : ${formatTanggalIndonesia(pengaturan?.tgl_badan_hukum)}`,
       pengaturan?.alamat_koperasi || "Alamat Belum Diatur",
     ];
     infoLines.forEach((line, i) => {
-      doc.text(line, startX + leftOffset, infoY + i * 10, { width: 750 - leftOffset, align: "center" });
+      doc.text(line, startX + leftOffset, infoY + i * 12, {
+        width: contentWidth - leftOffset,
+        align: "center",
+      });
     });
 
-    currentY += 65;
-    doc.moveTo(startX, currentY).lineTo(startX + 790, currentY).lineWidth(2).stroke("#000");
-    currentY += 2;
-    doc.moveTo(startX, currentY).lineTo(startX + 790, currentY).lineWidth(1).stroke("#000");
-    currentY += 12;
+    currentY += 75;
+    doc.moveTo(startX, currentY).lineTo(startX + contentWidth, currentY).lineWidth(2).stroke("#000");
+    currentY += 3;
+    doc.moveTo(startX, currentY).lineTo(startX + contentWidth, currentY).lineWidth(1).stroke("#000");
+    currentY += 14;
 
     // ── Judul ──
-    const titleText = `POTONGAN BULAN ${bulan?.toUpperCase() || ""} ${tahun || ""}`;
-    doc.fontSize(10).font("Helvetica-Bold").text(titleText, startX, currentY, {
-      width: 790,
+    doc.fillColor("#000").fontSize(12).font("Helvetica-Bold").text(judulPeriode, startX, currentY, {
+      width: contentWidth,
       align: "center",
     });
-    currentY = doc.y + 10;
+    currentY = doc.y + 4;
 
     if (instansi) {
-      doc.fontSize(8).font("Helvetica").text(`Instansi: ${instansi}`, startX, currentY, {
-        width: 790,
+      doc.fontSize(9).font("Helvetica-Bold").text(`Instansi: ${instansi}`, startX, currentY, {
+        width: contentWidth,
         align: "left",
       });
-      currentY = doc.y + 6;
+      currentY = doc.y + 8;
+    } else {
+      currentY += 8;
     }
 
-    // ── Lebar kolom (total 790) ──
+    // ── Lebar kolom (total ≈ 776, muat dalam contentWidth ≈ 801.89) ──
     const colWidths = [
-      18,   // No
-      18,   // Urut
-      105,  // Nama
-      40,   // Plafon
-      22,   // JW
-      22,   // Ke
-      48,   // Simp. Wajib
-      48,   // Simp. Sukarela
-      52,   // Utang Barang Pokok
-      48,   // Utang Barang Jasa
-      58,   // Utang Uang Menengah Pokok
-      52,   // Utang Uang Menengah Jasa
-      52,   // Utang Uang Pendek Pokok
-      48,   // Utang Uang Pendek Jasa
-      48,   // Simpanan Pokok
-      55    // Total
+      20,  // No
+      20,  // Urut
+      110, // Nama
+      45,  // Plafon
+      25,  // JW
+      25,  // Ke
+      50,  // Simp. Wajib
+      50,  // Simp. Sukarela
+      55,  // Utang Barang Pokok
+      50,  // Utang Barang Jasa
+      58,  // Utang Uang Menengah Pokok
+      55,  // Utang Uang Menengah Jasa
+      55,  // Utang Uang Pendek Pokok
+      50,  // Utang Uang Pendek Jasa
+      50,  // Simpanan Pokok
+      58,  // Total
     ];
 
     const headers = [
       "No", "Urut", "Nama", "Plafon", "JW", "Ke",
-      "Simp. Wajib", "Simp. Sukarela", "Utang Brg Pokok", "Utang Brg Jasa",
-      "Utang Uang Menengah Pokok", "Utang Uang Menengah Jasa",
-      "Utang Uang Pendek Pokok", "Utang Uang Pendek Jasa",
-      "Simpanan Pokok", "Total"
+      "Simp.\nWajib", "Simp.\nSukarela", "Utang Brg\nPokok", "Utang Brg\nJasa",
+      "Utang Uang\nMenengah Pokok", "Utang Uang\nMenengah Jasa",
+      "Utang Uang\nPendek Pokok", "Utang Uang\nPendek Jasa",
+      "Simpanan\nPokok", "Total",
     ];
+
+    const HEADER_H = 24;
+    const ROW_H = 18;
+    const HEADER_FONT = 7.5;
+    const BODY_FONT = 7.5;
 
     const drawHeader = (y) => {
       let x = startX;
       for (let i = 0; i < headers.length; i++) {
-        doc.rect(x, y, colWidths[i], 12).fill("#6c757d").stroke();
-        doc.fillColor("#fff").fontSize(5.5).font("Helvetica-Bold")
-          .text(headers[i], x + 1, y + 2, {
-            width: colWidths[i] - 2,
-            align: i === 2 ? "left" : "center"
+        doc.rect(x, y, colWidths[i], HEADER_H).fill("#495057").stroke();
+        doc
+          .fillColor("#fff")
+          .fontSize(HEADER_FONT)
+          .font("Helvetica-Bold")
+          .text(headers[i], x + 2, y + 3, {
+            width: colWidths[i] - 4,
+            align: i === 2 ? "left" : "center",
           });
         x += colWidths[i];
       }
-      return y + 12;
+      return y + HEADER_H;
     };
 
     let rowY = drawHeader(currentY);
-    const pageHeight = 540;
+    const bottomLimit = pageHeight - 40;
 
     // ── Isi Data ──
     data.forEach((item, idx) => {
-      if (rowY + 12 > pageHeight) {
-        doc.addPage({ size: [841.89, 595.28], margin: 20 });
+      if (rowY + ROW_H > bottomLimit) {
+        doc.addPage({ size: [841.89, 595.28], margin: 20, layout: "landscape" });
         rowY = 20;
         rowY = drawHeader(rowY);
       }
 
       const y = rowY;
       let x = startX;
-      const rowHeight = 11;
-      const bgColor = idx % 2 === 0 ? "#ffffff" : "#f8f9fa";
+      const bgColor = idx % 2 === 0 ? "#ffffff" : "#f1f3f5";
 
       for (let i = 0; i < colWidths.length; i++) {
-        doc.rect(x, y, colWidths[i], rowHeight).fill(bgColor).stroke();
+        doc.rect(x, y, colWidths[i], ROW_H).fill(bgColor).stroke("#dee2e6");
         x += colWidths[i];
       }
 
-      doc.fillColor("#000").fontSize(5.5).font("Helvetica");
+      doc.fillColor("#000").fontSize(BODY_FONT).font("Helvetica");
 
       x = startX;
-      // No
-      doc.text(String(idx + 1), x + 1, y + 1, { width: colWidths[0] - 2, align: "center" });
-      x += colWidths[0];
-      // Urut
-      doc.text(item.no_urut ? String(item.no_urut) : "", x + 1, y + 1, { width: colWidths[1] - 2, align: "center" });
-      x += colWidths[1];
-      // Nama
-      const nama = (item.anggota?.nama || "-").substring(0, 25);
-      doc.text(nama, x + 1, y + 1, { width: colWidths[2] - 2, align: "left" });
-      x += colWidths[2];
-      // Plafon
-      doc.text(item.plafon ? formatRupiah(item.plafon) : "", x + 1, y + 1, { width: colWidths[3] - 2, align: "right" });
-      x += colWidths[3];
-      // JW
-      doc.text(item.jangka_waktu || "", x + 1, y + 1, { width: colWidths[4] - 2, align: "center" });
-      x += colWidths[4];
-      // Ke
-      doc.text(item.angsuran_ke ? String(item.angsuran_ke) : "", x + 1, y + 1, { width: colWidths[5] - 2, align: "center" });
-      x += colWidths[5];
+      const cellText = (text, i, align = "right") => {
+        doc.text(text, x + 3, y + 5, { width: colWidths[i] - 6, align });
+        x += colWidths[i];
+      };
 
-      // Field rincian
-      for (let fi = 0; fi < fieldKeys.length; fi++) {
-        const val = parseFloat(item[fieldKeys[fi]]) || 0;
-        const display = val > 0 ? formatRupiah(val) : "";
-        doc.text(display, x + 1, y + 1, { width: colWidths[6 + fi] - 2, align: "right" });
-        x += colWidths[6 + fi];
-      }
+      cellText(String(idx + 1), 0, "center");
+      cellText(item.no_urut ? String(item.no_urut) : "", 1, "center");
+      cellText((item.anggota?.nama || "-").substring(0, 28), 2, "left");
+      cellText(item.plafon ? formatRupiah(item.plafon) : "", 3, "right");
+      cellText(item.jangka_waktu || "", 4, "center");
+      cellText(item.angsuran_ke ? String(item.angsuran_ke) : "", 5, "center");
 
-      // Total
-      doc.text(formatRupiah(item.total), x + 1, y + 1, { width: colWidths[colWidths.length - 1] - 2, align: "right" });
+      fieldKeys.forEach((key, fi) => {
+        const val = parseFloat(item[key]) || 0;
+        cellText(val > 0 ? formatRupiah(val) : "", 6 + fi, "right");
+      });
 
-      rowY += rowHeight;
+      doc.font("Helvetica-Bold");
+      cellText(formatRupiah(item.total), 15, "right");
+
+      rowY += ROW_H;
     });
 
     // ── Baris Total ──
     if (data.length > 0) {
-      if (rowY + 14 > pageHeight) {
-        doc.addPage({ size: [841.89, 595.28], margin: 20 });
+      if (rowY + ROW_H + 4 > bottomLimit) {
+        doc.addPage({ size: [841.89, 595.28], margin: 20, layout: "landscape" });
         rowY = 20;
         rowY = drawHeader(rowY);
       }
 
       const y = rowY;
+      const totalRowH = ROW_H + 2;
       let x = startX;
-      const rowHeight = 14;
 
       for (let i = 0; i < colWidths.length; i++) {
-        doc.rect(x, y, colWidths[i], rowHeight).fill("#e9ecef").stroke();
+        doc.rect(x, y, colWidths[i], totalRowH).fill("#e9ecef").stroke("#adb5bd");
         x += colWidths[i];
       }
 
-      doc.fillColor("#000").fontSize(6).font("Helvetica-Bold");
+      doc.fillColor("#000").fontSize(8).font("Helvetica-Bold");
       x = startX;
-      doc.text("TOTAL", x + 2, y + 2, { width: colWidths[0] + colWidths[1] + colWidths[2] - 4, align: "center" });
-      x += colWidths[0] + colWidths[1] + colWidths[2];
+      const labelWidth = colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5];
+      doc.text("TOTAL", x + 3, y + 5, { width: labelWidth - 6, align: "center" });
+      x += labelWidth;
 
-      // Tampilkan total per kolom rincian (hanya jika nilainya > 0)
-      for (let fi = 0; fi < fieldKeys.length; fi++) {
-        const val = totals[fieldKeys[fi]] || 0;
+      fieldKeys.forEach((key, fi) => {
+        const val = totals[key] || 0;
         const display = val > 0 ? formatRupiah(val) : "";
-        doc.text(display, x + 2, y + 2, { width: colWidths[6 + fi] - 4, align: "right" });
+        doc.text(display, x + 3, y + 5, { width: colWidths[6 + fi] - 6, align: "right" });
         x += colWidths[6 + fi];
-      }
+      });
 
-      // Total grand total
-      doc.text(formatRupiah(grandTotal), x + 2, y + 2, { width: colWidths[colWidths.length - 1] - 4, align: "right" });
-      rowY += rowHeight;
+      doc.text(formatRupiah(grandTotal), x + 3, y + 5, { width: colWidths[15] - 6, align: "right" });
+      rowY += totalRowH;
     }
+
+    // ── Footer tanggal cetak ──
+    doc
+      .fontSize(7)
+      .font("Helvetica-Oblique")
+      .fillColor("#555")
+      .text(`Dicetak: ${formatTanggalIndonesia(new Date())}`, startX, rowY + 10, {
+        width: contentWidth,
+        align: "right",
+      });
 
     doc.end();
   } catch (error) {
