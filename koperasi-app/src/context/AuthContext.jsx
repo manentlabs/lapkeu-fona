@@ -21,13 +21,19 @@ export function AuthProvider({ children }) {
     api
       .get("/auth/me")
       .then(({ data }) => {
-        setUser(data.user);
-        localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+        // hanya terapkan hasil ini kalau token belum berubah sejak request dikirim
+        if (localStorage.getItem(TOKEN_KEY) === token) {
+          setUser(data.user);
+          localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+        }
       })
       .catch(() => {
-        localStorage.removeItem(TOKEN_KEY);
-        localStorage.removeItem(USER_KEY);
-        setUser(null);
+        // hanya hapus sesi kalau token yang gagal itu masih token yang aktif sekarang
+        if (localStorage.getItem(TOKEN_KEY) === token) {
+          localStorage.removeItem(TOKEN_KEY);
+          localStorage.removeItem(USER_KEY);
+          setUser(null);
+        }
       })
       .finally(() => setLoading(false));
   }, []);

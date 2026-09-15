@@ -2,6 +2,9 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import DashboardLayout from "../../components/DashboardLayout";
 import api from "../../api/axios";
 import {
+  SlidersHorizontal,
+  ChevronDown,
+  Filter,
   Search,
   XCircle,
   Pencil,
@@ -12,7 +15,13 @@ import {
   X,
   UserPlus,
   CheckCircle,
-  XCircle as XCircleIcon,
+  Info,
+  Mail,
+  ShieldCheck,
+  CalendarDays,
+  LogIn,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 
 const emptyForm = {
@@ -26,6 +35,44 @@ const emptyForm = {
   anggota_id: "",
 };
 
+const emptyFilters = {
+  search: "",
+  role_id: "",
+  is_active: "",
+};
+
+// Menghasilkan daftar nomor halaman dengan elipsis, mis: [1, "...", 4, 5, 6, "...", 20]
+function getPageNumbers(current, total, siblingCount = 1) {
+  const totalNumbers = siblingCount * 2 + 5;
+  if (total <= totalNumbers) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+  const leftSibling = Math.max(current - siblingCount, 1);
+  const rightSibling = Math.min(current + siblingCount, total);
+  const showLeftDots = leftSibling > 2;
+  const showRightDots = rightSibling < total - 1;
+  const pages = [];
+  if (!showLeftDots && showRightDots) {
+    const leftRange = Array.from({ length: 3 + siblingCount * 2 }, (_, i) => i + 1);
+    pages.push(...leftRange, "...", total);
+  } else if (showLeftDots && !showRightDots) {
+    const rightRange = Array.from(
+      { length: 3 + siblingCount * 2 },
+      (_, i) => total - (3 + siblingCount * 2) + i + 1
+    );
+    pages.push(1, "...", ...rightRange);
+  } else if (showLeftDots && showRightDots) {
+    const middleRange = Array.from(
+      { length: rightSibling - leftSibling + 1 },
+      (_, i) => leftSibling + i
+    );
+    pages.push(1, "...", ...middleRange, "...", total);
+  } else {
+    pages.push(...Array.from({ length: total }, (_, i) => i + 1));
+  }
+  return pages;
+}
+
 export default function UserPage() {
   // ==================== State ====================
   const [users, setUsers] = useState([]);
@@ -35,10 +82,12 @@ export default function UserPage() {
   const [summary, setSummary] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
 
-  const [search, setSearch] = useState("");
-  const [appliedSearch, setAppliedSearch] = useState("");
+  // Filter panel (mengikuti pola AnggotaPage)
+  const [filters, setFilters] = useState(emptyFilters);
+  const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
+  const [filterOpen, setFilterOpen] = useState(false);
 
-  // Autocomplete user (untuk filter)
+  // Autocomplete user (untuk filter search)
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
@@ -69,34 +118,46 @@ export default function UserPage() {
   const [isCheckingUsername, setIsCheckingUsername] = useState(false);
   const [isCheckingEmail, setIsCheckingEmail] = useState(false);
 
-  const [deleteId, setDeleteId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [detailUser, setDetailUser] = useState(null);
   const [roles, setRoles] = useState([]);
 
   const searchInputRef = useRef(null);
   const suggestionRef = useRef(null);
+  const anggotaSuggestionRef = useRef(null);
   const usernameDebounceRef = useRef(null);
   const emailDebounceRef = useRef(null);
 
   // ==================== Fetch Data ====================
-  const fetchSummary = useCallback(async () => {
+  const fetchSummary = useCallback(async (activeFilters) => {
     setSummaryLoading(true);
     try {
-      const { data } = await api.get("/users/summary");
+      const params = { ...activeFilters };
+      Object.keys(params).forEach(
+        (k) => (params[k] === "" || params[k] == null) && delete params[k]
+      );
+      const { data } = await api.get("/users/summary", { params });
       setSummary(data);
+    } catch (err) {
+      console.error(err);
     } finally {
       setSummaryLoading(false);
     }
   }, []);
 
-  const fetchUsers = useCallback(async (page = 1, searchQuery = "") => {
+  const fetchUsers = useCallback(async (page = 1, activeFilters) => {
     setLoading(true);
     try {
-      const params = { page, per_page: 10 };
-      if (searchQuery) params.search = searchQuery;
+      const params = { ...activeFilters, page, per_page: 10 };
+      Object.keys(params).forEach(
+        (k) => (params[k] === "" || params[k] == null) && delete params[k]
+      );
       const { data } = await api.get("/users", { params });
       setUsers(data.data);
       setPagination(data.pagination);
+    } catch (err) {
+      console.error(err);
+      setUsers([]);
     } finally {
       setLoading(false);
     }
@@ -107,7 +168,7 @@ export default function UserPage() {
       const { data } = await api.get("/roles");
       setRoles(data.data);
     } catch {
-      // fallback
+      setRoles([]);
     }
   }, []);
 
@@ -147,82 +208,77 @@ export default function UserPage() {
   }, []);
 
   // Cek duplikat username
-  const checkUsername = useCallback(async (username) => {
-    if (!username || username.length < 2) {
-      setUsernameError("");
-      return;
-    }
-    setIsCheckingUsername(true);
-    try {
-      const params = { username };
-      if (editingId) params.exclude_id = editingId;
-      const { data } = await api.get("/users/check", { params });
-      if (data.exists) {
-        setUsernameError("Username sudah digunakan.");
-      } else {
+  const checkUsername = useCallback(
+    async (username) => {
+      if (!username || username.length < 2) {
         setUsernameError("");
+        return;
       }
-    } catch {
-      setUsernameError("");
-    } finally {
-      setIsCheckingUsername(false);
-    }
-  }, [editingId]);
+      setIsCheckingUsername(true);
+      try {
+        const params = { username };
+        if (editingId) params.exclude_id = editingId;
+        const { data } = await api.get("/users/check", { params });
+        setUsernameError(data.exists ? "Username sudah digunakan." : "");
+      } catch {
+        setUsernameError("");
+      } finally {
+        setIsCheckingUsername(false);
+      }
+    },
+    [editingId]
+  );
 
   // Cek duplikat email
-  const checkEmail = useCallback(async (email) => {
-    if (!email || email.length < 3) {
-      setEmailError("");
-      return;
-    }
-    setIsCheckingEmail(true);
-    try {
-      const params = { email };
-      if (editingId) params.exclude_id = editingId;
-      const { data } = await api.get("/users/check", { params });
-      if (data.exists) {
-        setEmailError("Email sudah digunakan.");
-      } else {
+  const checkEmail = useCallback(
+    async (email) => {
+      if (!email || email.length < 3) {
         setEmailError("");
+        return;
       }
-    } catch {
-      setEmailError("");
-    } finally {
-      setIsCheckingEmail(false);
-    }
-  }, [editingId]);
+      setIsCheckingEmail(true);
+      try {
+        const params = { email };
+        if (editingId) params.exclude_id = editingId;
+        const { data } = await api.get("/users/check", { params });
+        setEmailError(data.exists ? "Email sudah digunakan." : "");
+      } catch {
+        setEmailError("");
+      } finally {
+        setIsCheckingEmail(false);
+      }
+    },
+    [editingId]
+  );
 
-  // Debounce untuk autocomplete user
+  // Debounce autocomplete user (hanya saat filter panel terbuka)
   useEffect(() => {
-    const timer = setTimeout(() => fetchUserSuggestions(search), 300);
+    if (!filterOpen) return;
+    const timer = setTimeout(() => fetchUserSuggestions(filters.search), 300);
     return () => clearTimeout(timer);
-  }, [search, fetchUserSuggestions]);
+  }, [filters.search, fetchUserSuggestions, filterOpen]);
 
-  // Debounce untuk autocomplete anggota
+  // Debounce autocomplete anggota
   useEffect(() => {
     const timer = setTimeout(() => fetchAnggotaSuggestions(anggotaSearch), 300);
     return () => clearTimeout(timer);
   }, [anggotaSearch, fetchAnggotaSuggestions]);
 
-  // Debounce untuk cek username
+  // Debounce cek username
   useEffect(() => {
     clearTimeout(usernameDebounceRef.current);
-    usernameDebounceRef.current = setTimeout(() => {
-      checkUsername(form.username);
-    }, 500);
+    usernameDebounceRef.current = setTimeout(() => checkUsername(form.username), 500);
     return () => clearTimeout(usernameDebounceRef.current);
   }, [form.username, checkUsername]);
 
-  // Debounce untuk cek email
+  // Debounce cek email
   useEffect(() => {
     clearTimeout(emailDebounceRef.current);
-    emailDebounceRef.current = setTimeout(() => {
-      checkEmail(form.email);
-    }, 500);
+    emailDebounceRef.current = setTimeout(() => checkEmail(form.email), 500);
     return () => clearTimeout(emailDebounceRef.current);
   }, [form.email, checkEmail]);
 
-  // Click outside
+  // Click outside untuk autocomplete filter user
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (
@@ -233,9 +289,35 @@ export default function UserPage() {
       ) {
         setShowSuggestions(false);
       }
+      if (
+        anggotaSuggestionRef.current &&
+        !anggotaSuggestionRef.current.contains(e.target)
+      ) {
+        setShowAnggotaSuggestions(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Esc menutup modal
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (modalOpen) setModalOpen(false);
+      if (detailUser) setDetailUser(null);
+      if (deleteTarget) setDeleteTarget(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [modalOpen, detailUser, deleteTarget]);
+
+  // Initial load
+  useEffect(() => {
+    fetchSummary(emptyFilters);
+    fetchUsers(1, emptyFilters);
+    fetchRoles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ==================== Password Strength ====================
@@ -263,32 +345,36 @@ export default function UserPage() {
     setPasswordStrength({ score, label: result.label, color: result.color });
   }, []);
 
-  // ==================== Actions ====================
-  const applySearch = () => {
-    setAppliedSearch(search);
-    fetchUsers(1, search);
+  // ==================== Filter Actions ====================
+  const handleFilterChange = (key, value) =>
+    setFilters((prev) => ({ ...prev, [key]: value }));
+
+  const applyFilters = () => {
+    setAppliedFilters(filters);
+    fetchUsers(1, filters);
+    fetchSummary(filters);
   };
 
-  const resetSearch = () => {
-    setSearch("");
-    setAppliedSearch("");
-    fetchUsers(1, "");
+  const resetFilters = () => {
+    setFilters(emptyFilters);
+    setAppliedFilters(emptyFilters);
+    fetchUsers(1, emptyFilters);
+    fetchSummary(emptyFilters);
     setSuggestions([]);
     setShowSuggestions(false);
   };
 
   const goToPage = (page) => {
-    fetchUsers(page, appliedSearch);
+    fetchUsers(page, appliedFilters);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const selectUserSuggestion = (user) => {
-    setSearch(user.username);
+    setFilters((prev) => ({ ...prev, search: user.username }));
     setShowSuggestions(false);
-    setAppliedSearch(user.username);
-    fetchUsers(1, user.username);
   };
 
+  // ==================== Form Actions ====================
   const selectAnggota = (anggota) => {
     setSelectedAnggota(anggota);
     setAnggotaSearch(`${anggota.no_anggota} - ${anggota.nama}`);
@@ -306,7 +392,6 @@ export default function UserPage() {
     setForm((prev) => ({ ...prev, anggota_id: "", name: "" }));
   };
 
-  // Modal Form
   const openCreateModal = () => {
     setEditingId(null);
     setForm(emptyForm);
@@ -316,6 +401,8 @@ export default function UserPage() {
     setSelectedAnggota(null);
     setAnggotaSearch("");
     setPasswordStrength({ score: 0, label: "", color: "" });
+    setShowPassword(false);
+    setShowConfirmPassword(false);
     setModalOpen(true);
   };
 
@@ -334,6 +421,8 @@ export default function UserPage() {
     setUsernameError("");
     setEmailError("");
     setPasswordStrength({ score: 0, label: "", color: "" });
+    setShowPassword(false);
+    setShowConfirmPassword(false);
     if (user.anggota) {
       setSelectedAnggota(user.anggota);
       setAnggotaSearch(`${user.anggota.no_anggota} - ${user.anggota.nama}`);
@@ -349,17 +438,22 @@ export default function UserPage() {
 
   const handleFormChange = (field, value) => {
     setForm((prev) => ({ ...prev, [field]: value }));
-    if (field === "password") {
-      checkPasswordStrength(value);
-    }
+    if (field === "password") checkPasswordStrength(value);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setFormError("");
 
-    // Validasi password dan konfirmasi
+    if (!form.anggota_id) {
+      setFormError("Silakan pilih anggota terlebih dahulu.");
+      return;
+    }
     if (form.password) {
+      if (form.password.length < 8) {
+        setFormError("Password minimal 8 karakter.");
+        return;
+      }
       if (form.password !== form.confirmPassword) {
         setFormError("Password dan konfirmasi password tidak cocok.");
         return;
@@ -368,8 +462,6 @@ export default function UserPage() {
       setFormError("Password wajib diisi untuk pengguna baru.");
       return;
     }
-
-    // Validasi duplikat terakhir (cek error dari state)
     if (usernameError || emailError) {
       setFormError("Masih ada kesalahan pada form. Periksa username dan email.");
       return;
@@ -388,8 +480,8 @@ export default function UserPage() {
         await api.post("/users", payload);
       }
       setModalOpen(false);
-      fetchUsers(pagination.page, appliedSearch);
-      fetchSummary();
+      fetchUsers(pagination.page, appliedFilters);
+      fetchSummary(appliedFilters);
     } catch (err) {
       setFormError(err.response?.data?.message || "Terjadi kesalahan.");
     } finally {
@@ -398,23 +490,20 @@ export default function UserPage() {
   };
 
   const handleDelete = async () => {
+    if (!deleteTarget) return;
     try {
-      await api.delete(`/users/${deleteId}`);
-      setDeleteId(null);
-      fetchUsers(pagination.page, appliedSearch);
-      fetchSummary();
-    } catch {
-      alert("Gagal menghapus user.");
+      await api.delete(`/users/${deleteTarget.id}`);
+      setDeleteTarget(null);
+      const nextPage =
+        users.length === 1 && pagination.page > 1
+          ? pagination.page - 1
+          : pagination.page;
+      fetchUsers(nextPage, appliedFilters);
+      fetchSummary(appliedFilters);
+    } catch (err) {
+      alert(err.response?.data?.message || "Gagal menghapus user.");
     }
   };
-
-  // Initial load
-  useEffect(() => {
-    fetchSummary();
-    fetchUsers(1, "");
-    fetchRoles();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // ==================== Render ====================
   return (
@@ -446,37 +535,59 @@ export default function UserPage() {
           <SummaryCard label="Tidak Aktif" value={summary?.inactive ?? "-"} color="gray" />
         </div>
 
-        {/* Search & Filter */}
+        {/* Filter & Search Panel */}
         <div className="overflow-hidden rounded-xl bg-white shadow-sm">
-          <div className="p-5">
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="relative flex-1 min-w-[200px]">
+          <button
+            type="button"
+            onClick={() => setFilterOpen((v) => !v)}
+            className="flex w-full items-center justify-between px-5 py-4 text-left hover:bg-gray-50"
+          >
+            <span className="flex items-center gap-2 font-semibold text-gray-800">
+              <SlidersHorizontal size={18} className="text-gray-500" />
+              Filter Data
+            </span>
+            <ChevronDown
+              size={18}
+              className={`text-gray-500 transition-transform ${
+                filterOpen ? "rotate-180" : ""
+              }`}
+            />
+          </button>
+
+          {filterOpen && (
+            <div className="grid grid-cols-1 gap-4 border-t px-5 py-5 lg:grid-cols-3">
+              {/* Search dengan autocomplete user */}
+              <div className="relative lg:col-span-1">
                 <label className="mb-1 block text-xs font-medium text-gray-500">
                   Cari username / nama
                 </label>
                 <div className="relative">
+                  <Search
+                    size={15}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+                  />
                   <input
                     ref={searchInputRef}
                     type="text"
                     placeholder="Ketik username atau nama..."
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && applySearch()}
-                    className="w-full rounded-lg border px-3 py-2 pr-10 text-sm focus:border-blue-500 focus:outline-none"
+                    value={filters.search}
+                    onChange={(e) => handleFilterChange("search", e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && applyFilters()}
+                    className="w-full rounded-lg border py-2 pl-9 pr-9 text-sm focus:border-blue-500 focus:outline-none"
                   />
-                  {search && (
+                  {filters.search && (
                     <button
-                      onClick={() => setSearch("")}
+                      onClick={() => handleFilterChange("search", "")}
                       className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
                     >
-                      <XCircle size={16} />
+                      <XCircle size={15} />
                     </button>
                   )}
                 </div>
                 {showSuggestions && (
                   <div
                     ref={suggestionRef}
-                    className="absolute z-10 mt-1 w-full rounded-lg border bg-white shadow-lg max-h-60 overflow-auto"
+                    className="absolute z-20 mt-1 w-full overflow-auto rounded-lg border bg-white shadow-lg max-h-60"
                   >
                     {suggestLoading ? (
                       <div className="px-3 py-2 text-sm text-gray-400">Memuat...</div>
@@ -487,7 +598,7 @@ export default function UserPage() {
                         <button
                           key={user.id}
                           onClick={() => selectUserSuggestion(user)}
-                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50 border-b last:border-b-0"
+                          className="flex w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-gray-50"
                         >
                           <User size={14} className="text-gray-400" />
                           <span className="font-medium">{user.username}</span>
@@ -499,27 +610,57 @@ export default function UserPage() {
                   </div>
                 )}
               </div>
-              <div className="flex gap-2">
+
+              {/* Role */}
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-500">Role</label>
+                <select
+                  value={filters.role_id}
+                  onChange={(e) => handleFilterChange("role_id", e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                >
+                  <option value="">Semua Role</option>
+                  {roles.map((role) => (
+                    <option key={role.id} value={role.id}>
+                      {role.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Status */}
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-500">Status</label>
+                <select
+                  value={filters.is_active}
+                  onChange={(e) => handleFilterChange("is_active", e.target.value)}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                >
+                  <option value="">Semua Status</option>
+                  <option value="1">Aktif</option>
+                  <option value="0">Tidak Aktif</option>
+                </select>
+              </div>
+
+              {/* Tombol aksi */}
+              <div className="flex flex-wrap gap-2 lg:col-span-3">
                 <button
-                  onClick={applySearch}
+                  onClick={applyFilters}
                   className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
                 >
-                  <Search size={15} /> Cari
+                  <Search size={15} />
+                  Terapkan Filter
                 </button>
                 <button
-                  onClick={resetSearch}
+                  onClick={resetFilters}
                   className="flex items-center gap-1.5 rounded-lg border px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
                 >
-                  <XCircle size={15} /> Reset
+                  <XCircle size={15} />
+                  Reset
                 </button>
               </div>
             </div>
-            {appliedSearch && (
-              <p className="mt-3 text-sm text-gray-500">
-                Menampilkan hasil untuk: <span className="font-medium">"{appliedSearch}"</span>
-              </p>
-            )}
-          </div>
+          )}
         </div>
 
         {/* Tabel Desktop */}
@@ -538,13 +679,13 @@ export default function UserPage() {
             <tbody className="divide-y">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-gray-400">
+                  <td colSpan={6} className="px-4 py-6 text-center text-gray-400">
                     Memuat...
                   </td>
                 </tr>
               ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-gray-400">
+                  <td colSpan={6} className="px-4 py-6 text-center text-gray-400">
                     Tidak ada data.
                   </td>
                 </tr>
@@ -555,10 +696,12 @@ export default function UserPage() {
                     <td className="px-4 py-3">{user.email}</td>
                     <td className="px-4 py-3">{user.role?.name || "-"}</td>
                     <td className="px-4 py-3">
-                      {user.anggota ? `${user.anggota.no_anggota} - ${user.anggota.nama}` : "-"}
+                      {user.anggota
+                        ? `${user.anggota.no_anggota} - ${user.anggota.nama}`
+                        : "-"}
                     </td>
                     <td className="px-4 py-3">
-                       <StatusBadge active={user.is_active} />
+                      <StatusBadge active={user.is_active} />
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1.5">
@@ -577,7 +720,7 @@ export default function UserPage() {
                           <Pencil size={16} />
                         </button>
                         <button
-                          onClick={() => setDeleteId(user.id)}
+                          onClick={() => setDeleteTarget(user)}
                           title="Hapus user"
                           className="flex h-8 w-8 items-center justify-center rounded-lg text-red-600 hover:bg-red-50"
                         >
@@ -602,38 +745,56 @@ export default function UserPage() {
             users.map((user) => (
               <div key={user.id} className="rounded-xl bg-white p-4 shadow-sm">
                 <div className="flex items-start justify-between">
-                  <div>
-                    <p className="font-semibold">{user.name}</p>
-                    <p className="text-xs text-gray-500">@{user.username}</p>
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-gray-100">
+                      <User size={20} className="text-gray-400" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-gray-800">{user.name}</p>
+                      <p className="text-xs text-gray-500">@{user.username}</p>
+                    </div>
                   </div>
                   <StatusBadge active={user.is_active} />
                 </div>
-                <div className="mt-2 space-y-1 text-sm text-gray-600">
-                  <p>Email: {user.email}</p>
-                  <p>Role: {user.role?.name || "-"}</p>
-                  <p>
-                    Anggota:{" "}
-                    {user.anggota ? `${user.anggota.no_anggota} - ${user.anggota.nama}` : "-"}
+
+                <div className="mt-3 space-y-1.5 text-sm text-gray-600">
+                  <p className="flex items-center gap-2">
+                    <Mail size={14} className="shrink-0 text-gray-400" />
+                    {user.email}
+                  </p>
+                  <p className="flex items-center gap-2">
+                    <ShieldCheck size={14} className="shrink-0 text-gray-400" />
+                    {user.role?.name || "-"}
+                  </p>
+                  <p className="flex items-center gap-2">
+                    <User size={14} className="shrink-0 text-gray-400" />
+                    {user.anggota
+                      ? `${user.anggota.no_anggota} - ${user.anggota.nama}`
+                      : "-"}
                   </p>
                 </div>
-                <div className="mt-4 flex gap-2 border-t pt-3">
+
+                <div className="mt-4 flex items-center gap-2 border-t pt-3">
                   <button
                     onClick={() => openDetailModal(user)}
-                    className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border py-2 text-sm"
+                    className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white py-2.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100"
                   >
-                    <Eye size={15} /> Detail
+                    <Eye size={16} />
+                    Lihat
                   </button>
                   <button
                     onClick={() => openEditModal(user)}
-                    className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-blue-50 py-2 text-sm text-blue-600"
+                    className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-50 py-2.5 text-sm font-medium text-blue-600 transition-colors hover:bg-blue-100"
                   >
-                    <Pencil size={15} /> Edit
+                    <Pencil size={16} />
+                    Edit
                   </button>
                   <button
-                    onClick={() => setDeleteId(user.id)}
-                    className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-red-50 py-2 text-sm text-red-600"
+                    onClick={() => setDeleteTarget(user)}
+                    className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-red-50 py-2.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-100"
                   >
-                    <Trash2 size={15} /> Hapus
+                    <Trash2 size={16} />
+                    Hapus
                   </button>
                 </div>
               </div>
@@ -645,7 +806,8 @@ export default function UserPage() {
         {!loading && users.length > 0 && (
           <div className="flex flex-col items-center gap-3 rounded-xl bg-white p-4 shadow-sm sm:flex-row sm:justify-between sm:bg-transparent sm:p-0 sm:shadow-none">
             <p className="text-sm text-gray-500">
-              Halaman {pagination.page} dari {pagination.total_pages} &middot; {pagination.total} pengguna
+              Halaman {pagination.page} dari {pagination.total_pages} &middot;{" "}
+              {pagination.total} pengguna
             </p>
             <div className="flex flex-wrap justify-center gap-2">
               <button
@@ -656,13 +818,22 @@ export default function UserPage() {
                 Sebelumnya
               </button>
               <div className="flex flex-wrap gap-1.5">
-                {Array.from({ length: Math.min(pagination.total_pages, 10) }, (_, i) => i + 1).map(
-                  (p) => (
+                {getPageNumbers(pagination.page, pagination.total_pages).map((p, idx) =>
+                  p === "..." ? (
+                    <span
+                      key={`dots-${idx}`}
+                      className="flex h-8 w-8 items-center justify-center text-sm text-gray-400"
+                    >
+                      …
+                    </span>
+                  ) : (
                     <button
                       key={p}
                       onClick={() => goToPage(p)}
                       className={`h-8 w-8 rounded-lg text-sm ${
-                        p === pagination.page ? "bg-blue-600 text-white" : "border bg-white text-gray-600"
+                        p === pagination.page
+                          ? "bg-blue-600 text-white"
+                          : "border bg-white text-gray-600"
                       }`}
                     >
                       {p}
@@ -692,6 +863,7 @@ export default function UserPage() {
             <button
               onClick={() => setModalOpen(false)}
               className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
+              aria-label="Tutup"
             >
               <X size={20} />
             </button>
@@ -706,10 +878,12 @@ export default function UserPage() {
               )}
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 {/* Cari Anggota */}
-                <div className="sm:col-span-2">
+                <div className="sm:col-span-2" ref={anggotaSuggestionRef}>
                   <label className="mb-1 block text-sm font-medium text-gray-700">
                     Cari Anggota <span className="text-red-500">*</span>
-                    <span className="ml-2 text-xs text-gray-400">(nama atau no. anggota)</span>
+                    <span className="ml-2 text-xs text-gray-400">
+                      (nama atau no. anggota)
+                    </span>
                   </label>
                   <div className="relative">
                     <input
@@ -717,16 +891,18 @@ export default function UserPage() {
                       placeholder="Ketik nama atau nomor anggota..."
                       value={anggotaSearch}
                       onChange={(e) => setAnggotaSearch(e.target.value)}
+                      onFocus={() => anggotaSearch.length >= 2 && setShowAnggotaSuggestions(true)}
                       className="w-full rounded-lg border px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                       required
                     />
                     {showAnggotaSuggestions && anggotaSuggestions.length > 0 && (
-                      <div className="absolute z-10 mt-1 w-full rounded-lg border bg-white shadow-lg max-h-60 overflow-auto">
+                      <div className="absolute z-20 mt-1 w-full overflow-auto rounded-lg border bg-white shadow-lg max-h-60">
                         {anggotaSuggestions.map((anggota) => (
                           <button
                             key={anggota.id}
+                            type="button"
                             onClick={() => selectAnggota(anggota)}
-                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50 border-b last:border-b-0"
+                            className="flex w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-gray-50"
                           >
                             <span className="font-medium">{anggota.no_anggota}</span>
                             <span>- {anggota.nama}</span>
@@ -754,11 +930,13 @@ export default function UserPage() {
                   </p>
                 </div>
 
-                {/* Nama Lengkap (readonly) */}
+                {/* Nama Lengkap */}
                 <div className="sm:col-span-2">
                   <label className="mb-1 block text-sm text-gray-700">
                     Nama Lengkap <span className="text-red-500">*</span>
-                    <span className="ml-2 text-xs text-gray-400">(otomatis dari pilihan anggota)</span>
+                    <span className="ml-2 text-xs text-gray-400">
+                      (otomatis dari pilihan anggota)
+                    </span>
                   </label>
                   <input
                     type="text"
@@ -769,7 +947,7 @@ export default function UserPage() {
                   />
                 </div>
 
-                {/* Username dengan validasi */}
+                {/* Username */}
                 <div className="sm:col-span-2">
                   <label className="mb-1 block text-sm text-gray-700">
                     Username <span className="text-red-500">*</span>
@@ -780,7 +958,9 @@ export default function UserPage() {
                       value={form.username}
                       onChange={(e) => handleFormChange("username", e.target.value)}
                       className={`w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
-                        usernameError ? "border-red-500 focus:border-red-500" : "focus:border-blue-500"
+                        usernameError
+                          ? "border-red-500 focus:border-red-500"
+                          : "focus:border-blue-500"
                       }`}
                       required
                       placeholder="Masukkan username unik"
@@ -791,17 +971,19 @@ export default function UserPage() {
                       </div>
                     )}
                     {!isCheckingUsername && usernameError && (
-                      <XCircleIcon className="absolute right-3 top-1/2 -translate-y-1/2 text-red-500" size={18} />
+                      <XCircle className="absolute right-3 top-1/2 -translate-y-1/2 text-red-500" size={18} />
                     )}
                     {!isCheckingUsername && form.username && !usernameError && (
                       <CheckCircle className="absolute right-3 top-1/2 -translate-y-1/2 text-green-500" size={18} />
                     )}
                   </div>
-                  {usernameError && <p className="mt-1 text-xs text-red-500">{usernameError}</p>}
+                  {usernameError && (
+                    <p className="mt-1 text-xs text-red-500">{usernameError}</p>
+                  )}
                   <p className="mt-1 text-xs text-gray-400">Minimal 2 karakter, unik.</p>
                 </div>
 
-                {/* Email dengan validasi */}
+                {/* Email */}
                 <div className="sm:col-span-2">
                   <label className="mb-1 block text-sm text-gray-700">
                     Email <span className="text-red-500">*</span>
@@ -812,7 +994,9 @@ export default function UserPage() {
                       value={form.email}
                       onChange={(e) => handleFormChange("email", e.target.value)}
                       className={`w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
-                        emailError ? "border-red-500 focus:border-red-500" : "focus:border-blue-500"
+                        emailError
+                          ? "border-red-500 focus:border-red-500"
+                          : "focus:border-blue-500"
                       }`}
                       required
                       placeholder="Masukkan email unik"
@@ -823,16 +1007,18 @@ export default function UserPage() {
                       </div>
                     )}
                     {!isCheckingEmail && emailError && (
-                      <XCircleIcon className="absolute right-3 top-1/2 -translate-y-1/2 text-red-500" size={18} />
+                      <XCircle className="absolute right-3 top-1/2 -translate-y-1/2 text-red-500" size={18} />
                     )}
                     {!isCheckingEmail && form.email && !emailError && (
                       <CheckCircle className="absolute right-3 top-1/2 -translate-y-1/2 text-green-500" size={18} />
                     )}
                   </div>
-                  {emailError && <p className="mt-1 text-xs text-red-500">{emailError}</p>}
+                  {emailError && (
+                    <p className="mt-1 text-xs text-red-500">{emailError}</p>
+                  )}
                 </div>
 
-                {/* Password dengan toggle & strength */}
+                {/* Password */}
                 <div>
                   <label className="mb-1 block text-sm text-gray-700">
                     Password {!editingId && <span className="text-red-500">*</span>}
@@ -854,17 +1040,18 @@ export default function UserPage() {
                       {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                     </button>
                   </div>
-                  {/* Password Strength */}
                   {form.password && (
                     <div className="mt-2">
                       <div className="flex items-center gap-2">
-                        <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-200">
                           <div
                             className={`h-full transition-all duration-300 ${passwordStrength.color}`}
                             style={{ width: `${(passwordStrength.score / 5) * 100}%` }}
                           />
                         </div>
-                        <span className="text-xs font-medium text-gray-600">{passwordStrength.label}</span>
+                        <span className="text-xs font-medium text-gray-600">
+                          {passwordStrength.label}
+                        </span>
                       </div>
                       <p className="mt-1 text-xs text-gray-400">
                         Minimal 8 karakter, kombinasi huruf besar/kecil, angka, dan simbol.
@@ -901,7 +1088,10 @@ export default function UserPage() {
                       {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                     </button>
                     {form.confirmPassword && form.password === form.confirmPassword && (
-                      <CheckCircle className="absolute right-10 top-1/2 -translate-y-1/2 text-green-500" size={18} />
+                      <CheckCircle
+                        className="absolute right-10 top-1/2 -translate-y-1/2 text-green-500"
+                        size={18}
+                      />
                     )}
                   </div>
                   {form.confirmPassword && form.password !== form.confirmPassword && (
@@ -969,38 +1159,76 @@ export default function UserPage() {
       {detailUser && (
         <div className="fixed inset-0 z-50 flex flex-col bg-white">
           <div className="flex items-center justify-between border-b px-4 py-4 sm:px-8">
-            <h3 className="text-lg font-semibold text-gray-800 sm:text-xl">Detail Pengguna</h3>
+            <h3 className="text-lg font-semibold text-gray-800 sm:text-xl">
+              Detail Pengguna
+            </h3>
             <button
               onClick={() => setDetailUser(null)}
               className="rounded-lg p-2 text-gray-500 hover:bg-gray-100"
+              aria-label="Tutup"
             >
               <X size={20} />
             </button>
           </div>
           <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-            <div className="mx-auto max-w-2xl space-y-4">
-              <DetailRow label="Username" value={detailUser.username} />
-              <DetailRow label="Nama" value={detailUser.name} />
-              <DetailRow label="Email" value={detailUser.email} />
-              <DetailRow label="Role" value={detailUser.role?.name || "-"} />
-              <DetailRow
-                label="Anggota"
-                value={
-                  detailUser.anggota
-                    ? `${detailUser.anggota.no_anggota} - ${detailUser.anggota.nama}`
-                    : "-"
-                }
-              />
-              <DetailRow label="Status" value={<StatusBadge active={detailUser.is_active} />} />
-              <DetailRow
-                label="Login Terakhir"
-                value={detailUser.last_login ? new Date(detailUser.last_login).toLocaleString() : "-"}
-              />
-              <DetailRow label="Online" value={detailUser.is_online ? "Online" : "Offline"} />
-              <DetailRow
-                label="Dibuat"
-                value={detailUser.created_at ? new Date(detailUser.created_at).toLocaleString() : "-"}
-              />
+            <div className="mx-auto max-w-2xl">
+              <div className="mb-6 flex items-center gap-4">
+                <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full bg-gray-100">
+                  <User size={32} className="text-gray-400" />
+                </div>
+                <div>
+                  <p className="text-lg font-semibold text-gray-800">{detailUser.name}</p>
+                  <p className="text-sm text-gray-500">@{detailUser.username}</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <DetailRow icon={<User size={16} />} label="Username" value={detailUser.username} />
+                <DetailRow icon={<User size={16} />} label="Nama" value={detailUser.name} />
+                <DetailRow icon={<Mail size={16} />} label="Email" value={detailUser.email} />
+                <DetailRow
+                  icon={<ShieldCheck size={16} />}
+                  label="Role"
+                  value={detailUser.role?.name || "-"}
+                />
+                <DetailRow
+                  icon={<User size={16} />}
+                  label="Anggota"
+                  value={
+                    detailUser.anggota
+                      ? `${detailUser.anggota.no_anggota} - ${detailUser.anggota.nama}`
+                      : "-"
+                  }
+                />
+                <DetailRow
+                  icon={<CheckCircle size={16} />}
+                  label="Status"
+                  value={<StatusBadge active={detailUser.is_active} />}
+                />
+                <DetailRow
+                  icon={<LogIn size={16} />}
+                  label="Login Terakhir"
+                  value={
+                    detailUser.last_login
+                      ? new Date(detailUser.last_login).toLocaleString("id-ID")
+                      : "-"
+                  }
+                />
+                <DetailRow
+                  icon={detailUser.is_online ? <Wifi size={16} /> : <WifiOff size={16} />}
+                  label="Online"
+                  value={detailUser.is_online ? "Online" : "Offline"}
+                />
+                <DetailRow
+                  icon={<CalendarDays size={16} />}
+                  label="Dibuat"
+                  value={
+                    detailUser.created_at
+                      ? new Date(detailUser.created_at).toLocaleString("id-ID")
+                      : "-"
+                  }
+                />
+              </div>
             </div>
           </div>
           <div className="flex justify-end border-t px-4 py-4 sm:px-8">
@@ -1015,15 +1243,24 @@ export default function UserPage() {
       )}
 
       {/* ==================== KONFIRMASI HAPUS ==================== */}
-      {deleteId && (
+      {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-sm rounded-xl bg-white p-6 text-center">
-            <p className="mb-4 text-gray-700">Yakin ingin menghapus pengguna ini?</p>
+            <p className="mb-4 text-gray-700">
+              Yakin ingin menghapus pengguna{" "}
+              <strong>{deleteTarget.name || deleteTarget.username}</strong>?
+            </p>
             <div className="flex justify-center gap-2">
-              <button onClick={() => setDeleteId(null)} className="rounded-lg border px-4 py-2 text-sm">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-lg border px-4 py-2 text-sm"
+              >
                 Batal
               </button>
-              <button onClick={handleDelete} className="rounded-lg bg-red-600 px-4 py-2 text-sm text-white">
+              <button
+                onClick={handleDelete}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700"
+              >
                 Hapus
               </button>
             </div>
@@ -1049,36 +1286,26 @@ function SummaryCard({ label, value, color }) {
   );
 }
 
-function StatusBadge({ status, active }) {
-  // Untuk user (menggunakan prop active)
-  if (active !== undefined) {
-    return (
-      <span className={`rounded-full px-2 py-1 text-xs font-medium ${
+function StatusBadge({ active }) {
+  return (
+    <span
+      className={`rounded-full px-2 py-1 text-xs font-medium ${
         active ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"
-      }`}>
-        {active ? "Aktif" : "Nonaktif"}
-      </span>
-    );
-  }
-  // Untuk anggota (menggunakan prop status)
-  if (status !== undefined) {
-    const isAktif = status?.toLowerCase() === "aktif";
-    return (
-      <span className={`rounded-full px-2 py-1 text-xs font-medium ${
-        isAktif ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"
-      }`}>
-        {isAktif ? "Aktif" : "Nonaktif"}
-      </span>
-    );
-  }
-  return <span className="rounded-full px-2 py-1 text-xs font-medium bg-gray-100 text-gray-600">-</span>;
+      }`}
+    >
+      {active ? "Aktif" : "Nonaktif"}
+    </span>
+  );
 }
 
-function DetailRow({ label, value }) {
+function DetailRow({ icon, label, value }) {
   return (
-    <div className="grid grid-cols-3 gap-2 border-b pb-2">
-      <dt className="text-sm font-medium text-gray-600">{label}</dt>
-      <dd className="col-span-2 text-sm text-gray-800">{value}</dd>
+    <div className="flex items-start gap-3 border-b pb-2">
+      <div className="mt-0.5 text-gray-400">{icon}</div>
+      <div className="flex-1">
+        <div className="text-xs text-gray-500">{label}</div>
+        <div className="text-sm text-gray-800">{value}</div>
+      </div>
     </div>
   );
 }

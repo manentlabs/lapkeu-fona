@@ -16,12 +16,12 @@ const PotonganGaji = sequelize.define(
       allowNull: false,
       comment: "Foreign key ke tabel anggota",
     },
-    // Ditambahkan: mengaitkan baris potongan cicilan pinjaman ke Pinjaman
-    // yang spesifik. WAJIB dipakai (bukan opsional) untuk sumber "pinjaman",
-    // karena satu anggota bisa punya lebih dari satu pinjaman aktif
-    // sekaligus (pinjaman lama yang sudah separuh lunas + pinjaman baru
-    // yang baru disetujui) -- anggota_id saja tidak cukup untuk menentukan
-    // pinjaman mana yang sedang dilunasi oleh potongan ini.
+    // Mengaitkan baris potongan cicilan pinjaman ke Pinjaman yang spesifik.
+    // WAJIB dipakai (bukan opsional) untuk sumber "pinjaman", karena satu
+    // anggota bisa punya lebih dari satu pinjaman aktif sekaligus (pinjaman
+    // lama yang sudah separuh lunas + pinjaman baru yang baru disetujui) --
+    // anggota_id saja tidak cukup untuk menentukan pinjaman mana yang
+    // sedang dilunasi oleh potongan ini.
     // Nullable karena baris "manual" (bukan dari pinjaman) tidak punya
     // pinjaman terkait sama sekali.
     pinjaman_id: {
@@ -55,6 +55,44 @@ const PotonganGaji = sequelize.define(
       type: DataTypes.STRING(255),
       allowNull: true,
       comment: "Catatan/keterangan tambahan untuk potongan ini",
+    },
+
+    // ─── Sumber pembayaran per-field (gaji / tukin) ─────────
+    // Kolom fisik di DB. JANGAN dibaca/ditulis langsung dari controller
+    // atau frontend -- pakai field virtual `metode_potongan` di bawah,
+    // supaya nama yang dipakai konsisten dengan payload React
+    // (PotonganGajiPage.jsx mengirim/membaca `metode_potongan`).
+    sumber_field: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      defaultValue: {},
+      comment:
+        'Peta per-field: {"simpanan_wajib":"gaji","utang_barang_pokok":"tukin", ...}. ' +
+        'Field yang tidak ada di JSON dianggap default "gaji". ' +
+        'Diakses dari luar model lewat field virtual `metode_potongan`.',
+      get() {
+        // Jaga-jaga kalau baris lama/insert manual di luar model
+        // menyimpan NULL -- konsumen selalu dapat object, bukan null.
+        return this.getDataValue("sumber_field") || {};
+      },
+    },
+
+    // Field virtual: alias baca/tulis untuk `sumber_field`, dengan nama
+    // yang sama seperti yang dipakai frontend & req.body (`metode_potongan`).
+    // Tujuannya supaya controller bisa langsung pakai
+    // `potongan.metode_potongan = req.body.metode_potongan` atau
+    // `PotonganGaji.create({ ..., metode_potongan: req.body.metode_potongan })`
+    // tanpa perlu mapping nama manual berulang di tiap endpoint, dan supaya
+    // `res.json(potongan)` otomatis menyertakan `metode_potongan` di response
+    // tanpa transform tambahan.
+    metode_potongan: {
+      type: DataTypes.VIRTUAL,
+      get() {
+        return this.getDataValue("sumber_field") || {};
+      },
+      set(value) {
+        this.setDataValue("sumber_field", value && typeof value === "object" ? value : {});
+      },
     },
 
     plafon: {

@@ -1,5 +1,5 @@
 // src/pages/anggota/AnggotaPinjamanPage.jsx
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import DashboardLayout from "../../components/DashboardLayout";
 import api from "../../api/axios";
 import { useAuth } from "../../context/AuthContext";
@@ -41,10 +41,29 @@ function getStatusBadge(status) {
   return map[status] || { label: status, color: "bg-gray-100 text-gray-700" };
 }
 
+// ─── Skema Pinjaman ─────────────────────────────────────────
+// Bunga tetap 2.75% per bulan (flat), jangka waktu sesuai tabel angsuran koperasi.
+const SUKU_BUNGA_TETAP = 2.75;
+const JANGKA_WAKTU_OPTIONS = [10, 12, 15, 18, 20, 24, 36];
+
+// Rumus anuitas: PMT = P * i / (1 - (1+i)^-n)
+// Diverifikasi cocok dengan tabel (mis. Rp1.000.000 / 10 bulan -> Rp115.740)
+function hitungAngsuranPerBulan(plafon, jangkaWaktu, sukuBunga = SUKU_BUNGA_TETAP) {
+  const P = parseFloat(plafon) || 0;
+  const n = parseInt(jangkaWaktu, 10) || 0;
+  const i = (parseFloat(sukuBunga) || 0) / 100;
+
+  if (P <= 0 || n <= 0) return 0;
+  if (i === 0) return P / n;
+
+  const factor = i / (1 - Math.pow(1 + i, -n));
+  return P * factor;
+}
+
 const emptyForm = {
   plafon: "",
   jangka_waktu: "12",
-  suku_bunga: "0",
+  suku_bunga: String(SUKU_BUNGA_TETAP),
   metode_pembayaran: "cash",
 };
 
@@ -101,6 +120,12 @@ export default function AnggotaPinjamanPage() {
     setFormError("");
   };
 
+  // ─── Estimasi angsuran per bulan (live preview) ─────────
+  const angsuranPreview = useMemo(
+    () => hitungAngsuranPerBulan(form.plafon, form.jangka_waktu, form.suku_bunga),
+    [form.plafon, form.jangka_waktu, form.suku_bunga]
+  );
+
   // ─── Submit pengajuan ────────────────────────────────────
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -117,7 +142,7 @@ export default function AnggotaPinjamanPage() {
       const payload = {
         plafon: plafonNum,
         jangka_waktu: parseInt(form.jangka_waktu, 10),
-        suku_bunga: parseFloat(form.suku_bunga) || 0,
+        suku_bunga: SUKU_BUNGA_TETAP,
         metode_pembayaran: form.metode_pembayaran,
       };
 
@@ -169,6 +194,7 @@ export default function AnggotaPinjamanPage() {
                 <th className="px-4 py-3 text-right">Plafon</th>
                 <th className="px-4 py-3 text-center">Jangka Waktu</th>
                 <th className="px-4 py-3 text-center">Suku Bunga</th>
+                <th className="px-4 py-3 text-right">Angsuran/Bulan</th>
                 <th className="px-4 py-3 text-center">Sisa Angsuran</th>
                 <th className="px-4 py-3 text-center">Metode</th>
                 <th className="px-4 py-3 text-center">Status</th>
@@ -178,13 +204,13 @@ export default function AnggotaPinjamanPage() {
             <tbody className="divide-y">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-gray-400">
+                  <td colSpan={9} className="px-4 py-6 text-center text-gray-400">
                     <Loader className="animate-spin inline-block mr-2" size={20} /> Memuat...
                   </td>
                 </tr>
               ) : riwayat.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-gray-400">
+                  <td colSpan={9} className="px-4 py-10 text-center text-gray-400">
                     <Wallet size={40} className="mx-auto mb-2 opacity-50" />
                     Belum ada riwayat pinjaman.
                   </td>
@@ -192,6 +218,11 @@ export default function AnggotaPinjamanPage() {
               ) : (
                 riwayat.map((p, idx) => {
                   const status = getStatusBadge(p.verifikasi_status);
+                  const angsuran = hitungAngsuranPerBulan(
+                    p.plafon,
+                    p.jangka_waktu,
+                    p.suku_bunga ?? SUKU_BUNGA_TETAP
+                  );
                   return (
                     <tr key={p.id} className="hover:bg-gray-50 transition">
                       <td className="px-4 py-3 text-center text-gray-500">{idx + 1}</td>
@@ -199,7 +230,12 @@ export default function AnggotaPinjamanPage() {
                         Rp {formatRupiah(p.plafon)}
                       </td>
                       <td className="px-4 py-3 text-center">{p.jangka_waktu} bulan</td>
-                      <td className="px-4 py-3 text-center">{p.suku_bunga || 0}%</td>
+                      <td className="px-4 py-3 text-center">
+                        {p.suku_bunga ?? SUKU_BUNGA_TETAP}%
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono">
+                        Rp {formatRupiah(angsuran)}
+                      </td>
                       <td className="px-4 py-3 text-center">
                         {p.status === "aktif" ? p.sisa_angsuran : "-"}
                       </td>
@@ -229,6 +265,11 @@ export default function AnggotaPinjamanPage() {
           {!loading &&
             riwayat.map((p) => {
               const status = getStatusBadge(p.verifikasi_status);
+              const angsuran = hitungAngsuranPerBulan(
+                p.plafon,
+                p.jangka_waktu,
+                p.suku_bunga ?? SUKU_BUNGA_TETAP
+              );
               return (
                 <div key={p.id} className="bg-white rounded-xl shadow-sm p-4 border border-gray-100">
                   <div className="flex items-start justify-between">
@@ -249,7 +290,13 @@ export default function AnggotaPinjamanPage() {
                     </div>
                     <div className="flex justify-between border-b py-1">
                       <span className="text-gray-500">Suku Bunga</span>
-                      <span>{p.suku_bunga || 0}%</span>
+                      <span>{p.suku_bunga ?? SUKU_BUNGA_TETAP}%</span>
+                    </div>
+                    <div className="flex justify-between border-b py-1 col-span-2">
+                      <span className="text-gray-500">Angsuran/Bulan</span>
+                      <span className="font-mono font-medium">
+                        Rp {formatRupiah(angsuran)}
+                      </span>
                     </div>
                     <div className="flex justify-between border-b py-1">
                       <span className="text-gray-500">Metode</span>
@@ -318,33 +365,19 @@ export default function AnggotaPinjamanPage() {
                   onChange={handleChange}
                   className="w-full rounded-lg border px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                 >
-                  <option value="6">6 bulan</option>
-                  <option value="12">12 bulan</option>
-                  <option value="18">18 bulan</option>
-                  <option value="24">24 bulan</option>
-                  <option value="36">36 bulan</option>
-                  <option value="48">48 bulan</option>
+                  {JANGKA_WAKTU_OPTIONS.map((n) => (
+                    <option key={n} value={n}>
+                      {n} bulan
+                    </option>
+                  ))}
                 </select>
               </div>
 
               <div>
-                <label className="mb-1 block text-sm text-gray-700">Suku Bunga (%)</label>
-                <select
-                  name="suku_bunga"
-                  value={form.suku_bunga}
-                  onChange={handleChange}
-                  className="w-full rounded-lg border px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                >
-                  <option value="0">0% (Tanpa Bunga)</option>
-                  <option value="5">5%</option>
-                  <option value="6">6%</option>
-                  <option value="7">7%</option>
-                  <option value="8">8%</option>
-                  <option value="9">9%</option>
-                  <option value="10">10%</option>
-                  <option value="12">12%</option>
-                  <option value="15">15%</option>
-                </select>
+                <label className="mb-1 block text-sm text-gray-700">Suku Bunga</label>
+                <div className="w-full rounded-lg border bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                  {SUKU_BUNGA_TETAP}% per bulan (tetap, sesuai ketentuan koperasi)
+                </div>
               </div>
 
               <div>
@@ -358,6 +391,17 @@ export default function AnggotaPinjamanPage() {
                   <option value="cash">Tunai</option>
                   <option value="potong_gaji">Potong Gaji</option>
                 </select>
+              </div>
+
+              {/* ─── Estimasi Angsuran ─────────────────────────── */}
+              <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+                <p className="text-xs text-blue-700">Estimasi Angsuran per Bulan</p>
+                <p className="text-lg font-bold text-blue-800">
+                  Rp {formatRupiah(angsuranPreview)}
+                </p>
+                <p className="mt-0.5 text-xs text-blue-600">
+                  Total {form.jangka_waktu} kali angsuran, bunga {SUKU_BUNGA_TETAP}%/bulan.
+                </p>
               </div>
             </form>
           </div>

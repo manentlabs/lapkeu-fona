@@ -34,7 +34,7 @@ exports.index = async (req, res) => {
         { model: Role, as: 'role', attributes: ['id', 'name'] },
         { model: Anggota, as: 'anggota', attributes: ['id', 'no_anggota', 'nama'] },
       ],
-      order: [['created_at', 'DESC']],
+      order: [['id', 'ASC']],
       limit: perPage,
       offset: (page - 1) * perPage,
     });

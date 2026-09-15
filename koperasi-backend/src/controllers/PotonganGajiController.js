@@ -1,3 +1,4 @@
+const { hitungAngsuranUangMenengah } = require("../utils/angsuranPinjaman");
 const PotonganGaji = require("../models/PotonganGaji");
 const Anggota = require("../models/Anggota");
 const Transaksi = require("../models/Transaksi");
@@ -12,6 +13,17 @@ const ExcelJS = require("exceljs");
 const PDFDocument = require("pdfkit");
 const fs = require("fs");
 const path = require("path");
+
+// ─── Daftar bulan (harus sinkron dengan BULAN_LIST di frontend,
+// src/pages/bendahara/PotonganGajiPage.jsx) ───────────────────
+const BULAN_LIST = [
+  "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+  "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+];
+
+// Harus sinkron dengan DEFAULT_SIMPANAN_WAJIB di frontend
+// (src/pages/bendahara/PotonganGajiPage.jsx).
+const DEFAULT_SIMPANAN_WAJIB = 180000;
 
 // ─── Helper format Rupiah ────────────────────────────────────
 function formatRupiah(value) {
@@ -33,6 +45,21 @@ function formatTanggalIndonesia(value) {
   return `${date.getDate()} ${bulan[date.getMonth()]} ${date.getFullYear()}`;
 }
 
+// ─── Helper: bulan & tahun sebelumnya dari BULAN_LIST ───────
+// Dipakai untuk mengambil nilai simpanan sukarela bulan lalu sebagai
+// default di modal Input per Instansi.
+function getBulanSebelumnya(bulan, tahun) {
+  const idx = BULAN_LIST.indexOf(bulan);
+  const tahunNum = parseInt(tahun, 10);
+  if (idx === -1 || Number.isNaN(tahunNum)) {
+    return { bulan: null, tahun: null };
+  }
+  if (idx === 0) {
+    return { bulan: BULAN_LIST[11], tahun: tahunNum - 1 };
+  }
+  return { bulan: BULAN_LIST[idx - 1], tahun: tahunNum };
+}
+
 // ─── Helper: generate no transaksi ──────────────────────────
 async function generateNoTransaksi(t) {
   const now = new Date();
@@ -52,11 +79,19 @@ async function generateNoTransaksi(t) {
 // ─── Index (dengan filter instansi) ─────────────────────────
 exports.index = async (req, res) => {
   try {
-    const { bulan, tahun, instansi, page = 1, per_page = 10 } = req.query;
+    const { bulan, tahun, instansi, is_processed, page = 1, per_page = 10 } = req.query;
 
     const where = {};
     if (bulan) where.bulan = bulan;
     if (tahun) where.tahun = tahun;
+    // 🆕 Filter status proses. Dipakai oleh tab "Pengajuan Potongan" di
+    // halaman Transaksi (frontend) untuk hanya menampilkan baris yang
+    // belum diproses ke jurnal (is_processed=false), tanpa mengubah
+    // perilaku default endpoint ini (kalau param tidak dikirim, semua
+    // status tetap ikut tampil seperti sebelumnya).
+    if (is_processed !== undefined) {
+      where.is_processed = is_processed === "true" || is_processed === "1" || is_processed === true;
+    }
 
     const include = [{
       model: Anggota,
@@ -80,13 +115,20 @@ exports.index = async (req, res) => {
     const summaryWhere = {};
     if (bulan) summaryWhere.bulan = bulan;
     if (tahun) summaryWhere.tahun = tahun;
+    if (is_processed !== undefined) {
+      summaryWhere.is_processed = where.is_processed;
+    }
 
-    // Untuk summary, perlu join dengan anggota untuk filter instansi
+    // Untuk summary, perlu join dengan anggota untuk filter instansi.
+    // CATATAN: sengaja TIDAK membatasi status:"aktif" di sini, supaya
+    // konsisten dengan query `rows` di atas yang juga tidak membatasi
+    // status anggota -- kalau tidak, total di kartu ringkasan bulanan
+    // bisa berbeda dari total yang sebenarnya tampil di tabel ketika ada
+    // potongan milik anggota yang sudah nonaktif.
     let summary = [];
     if (instansi) {
-      // Ambil semua anggota di instansi tersebut
       const anggotaIds = await Anggota.findAll({
-        where: { instansi, status: "aktif" },
+        where: { instansi },
         attributes: ["id"],
         raw: true,
       });
@@ -182,6 +224,7 @@ exports.store = async (req, res) => {
         utang_uang_pendek_pokok: row.utang_uang_pendek_pokok || 0,
         utang_uang_pendek_jasa: row.utang_uang_pendek_jasa || 0,
         simpanan_pokok: row.simpanan_pokok || 0,
+        metode_potongan: row.metode_potongan || {},
         total,
       });
     }
@@ -207,7 +250,7 @@ exports.create = async (req, res) => {
       utang_barang_pokok, utang_barang_jasa,
       utang_uang_menengah_pokok, utang_uang_menengah_jasa,
       utang_uang_pendek_pokok, utang_uang_pendek_jasa,
-      simpanan_pokok,
+      simpanan_pokok, metode_potongan,
     } = req.body;
 
     if (!bulan || !tahun || (!anggota_id && !no_anggota)) {
@@ -220,6 +263,19 @@ exports.create = async (req, res) => {
 
     if (!anggota) {
       return res.status(404).json({ message: "Anggota tidak ditemukan." });
+    }
+
+    // Cegah anggota yang sama punya lebih dari satu baris potongan untuk
+    // bulan/tahun yang sama (mencegah total ganda saat diproses ke
+    // jurnal). Baris dari sumber "pinjaman" boleh berdampingan dengan
+    // baris manual lain -- yang dicegah hanya duplikat baris manual.
+    const existing = await PotonganGaji.findOne({
+      where: { anggota_id: anggota.id, bulan, tahun, sumber: "manual" },
+    });
+    if (existing) {
+      return res.status(422).json({
+        message: `${anggota.nama} sudah punya potongan manual untuk ${bulan} ${tahun}. Edit baris yang sudah ada, jangan tambah baru.`,
+      });
     }
 
     const total =
@@ -251,6 +307,7 @@ exports.create = async (req, res) => {
       utang_uang_pendek_pokok: utang_uang_pendek_pokok || 0,
       utang_uang_pendek_jasa: utang_uang_pendek_jasa || 0,
       simpanan_pokok: simpanan_pokok || 0,
+      metode_potongan: metode_potongan || {},
       total,
       is_processed: false,
     });
@@ -289,6 +346,7 @@ exports.update = async (req, res) => {
       if (req.body[f] !== undefined) updates[f] = req.body[f] || 0;
     });
     if (req.body.keterangan !== undefined) updates.keterangan = req.body.keterangan;
+    if (req.body.metode_potongan !== undefined) updates.metode_potongan = req.body.metode_potongan || {};
 
     updates.total =
       (parseFloat(updates.simpanan_wajib ?? potongan.simpanan_wajib) || 0) +
@@ -537,7 +595,15 @@ exports.processAll = async (req, res) => {
 exports.generatePinjamanBulanIni = async (req, res) => {
   try {
     const now = new Date();
-    const bulan = now.toLocaleString("id-ID", { month: "long" });
+    // FIX: sebelumnya pakai `now.toLocaleString("id-ID", { month: "long" })`,
+    // yang hasilnya bergantung pada dukungan ICU penuh di runtime Node
+    // server. Kalau Node di-build dengan small-icu (umum di image Docker
+    // default), ini bisa menghasilkan nama bulan berbahasa Inggris atau
+    // format lain yang tidak match dengan BULAN_LIST -- akibatnya baris
+    // yang tergenerate di sini tidak match dengan `where: { bulan, tahun }`
+    // di endpoint lain (index, getAnggotaByInstansi, dst). Pakai BULAN_LIST
+    // yang sama seperti frontend supaya selalu konsisten.
+    const bulan = BULAN_LIST[now.getMonth()];
     const tahun = now.getFullYear();
 
     const pinjamanAktif = await Pinjaman.findAll({
@@ -565,6 +631,21 @@ exports.generatePinjamanBulanIni = async (req, res) => {
         const maxUrut = await PotonganGaji.max("no_urut", { where: { bulan, tahun } });
         const angsuranKe = (pinjaman.angsuran_ke || 0) + 1;
 
+        // ── FIX: hitung ulang cicilan Uang Menengah dari plafon &
+        // jangka_waktu memakai util yang sama dengan PinjamanController,
+        // BUKAN sekadar copy pinjaman.utang_uang_menengah_pokok/jasa.
+        //
+        // Alasan: field itu pada pinjaman lama (dibuat sebelum rumus ini
+        // ada / sempat diedit manual di DB) bisa tidak akurat atau kosong.
+        // Kalau dibiarkan copy-paste, cicilan bulanan yang tergenerate di
+        // sini akan salah terus tiap bulan mengikuti kesalahan awal.
+        // Menghitung ulang dari plafon+jangka_waktu setiap kali generate
+        // menjamin baris cicilan selalu konsisten dengan rumus resmi:
+        //   Pokok = plafon / jangka_waktu
+        //   Jasa  = 2,75% x plafon
+        const { pokok: uangMenengahPokok, jasa: uangMenengahJasa } =
+          hitungAngsuranUangMenengah(pinjaman.plafon, pinjaman.jangka_waktu);
+
         await PotonganGaji.create({
           anggota_id: pinjaman.anggota_id,
           pinjaman_id: pinjaman.id,
@@ -580,8 +661,8 @@ exports.generatePinjamanBulanIni = async (req, res) => {
           simpanan_sukarela: pinjaman.simpanan_sukarela || 0,
           utang_barang_pokok: pinjaman.utang_brg_pokok || 0,
           utang_barang_jasa: pinjaman.utang_brg_jasa || 0,
-          utang_uang_menengah_pokok: pinjaman.utang_uang_menengah_pokok || 0,
-          utang_uang_menengah_jasa: pinjaman.utang_uang_menengah_jasa || 0,
+          utang_uang_menengah_pokok: uangMenengahPokok,
+          utang_uang_menengah_jasa: uangMenengahJasa,
           utang_uang_pendek_pokok: pinjaman.utang_uang_pendek_pokok || 0,
           utang_uang_pendek_jasa: pinjaman.utang_uang_pendek_jasa || 0,
           simpanan_pokok: pinjaman.simpanan_pokok || 0,
@@ -590,8 +671,8 @@ exports.generatePinjamanBulanIni = async (req, res) => {
             (parseFloat(pinjaman.simpanan_sukarela) || 0) +
             (parseFloat(pinjaman.utang_brg_pokok) || 0) +
             (parseFloat(pinjaman.utang_brg_jasa) || 0) +
-            (parseFloat(pinjaman.utang_uang_menengah_pokok) || 0) +
-            (parseFloat(pinjaman.utang_uang_menengah_jasa) || 0) +
+            uangMenengahPokok +
+            uangMenengahJasa +
             (parseFloat(pinjaman.utang_uang_pendek_pokok) || 0) +
             (parseFloat(pinjaman.utang_uang_pendek_jasa) || 0) +
             (parseFloat(pinjaman.simpanan_pokok) || 0),
@@ -656,6 +737,11 @@ const FIELD_LABELS = {
   utang_uang_pendek_jasa: "Utang Uang Pendek Jasa",
 };
 
+// Field cicilan uang menengah yang bisa muncul sebagai pratinjau otomatis
+// dari pinjaman aktif anggota (lihat pinjaman_preview di getAnggotaByInstansi).
+// Harus sinkron dengan PINJAMAN_PREVIEW_FIELDS di frontend.
+const PINJAMAN_PREVIEW_FIELDS = ["utang_uang_menengah_pokok", "utang_uang_menengah_jasa"];
+
 // ─── Daftar instansi aktif ──────────────────────────────────
 exports.listInstansi = async (req, res) => {
   try {
@@ -673,6 +759,17 @@ exports.listInstansi = async (req, res) => {
 };
 
 // ─── Get Anggota by Instansi ────────────────────────────────
+// Mengembalikan daftar anggota aktif di sebuah instansi untuk bulan/tahun
+// tertentu, lengkap dengan nilai yang sudah pernah diisi (kalau ada) DAN
+// nilai default yang siap dipakai modal Input per Instansi di frontend:
+//   - default_simpanan_wajib   : nominal simpanan wajib standar
+//   - default_simpanan_sukarela: nilai simpanan sukarela anggota di bulan
+//                                 sebelumnya (kalau ada), supaya bendahara
+//                                 tidak perlu isi ulang tiap bulan
+//   - pinjaman_preview          : true kalau utang_uang_menengah_* di baris
+//                                 ini adalah pratinjau cicilan dari pinjaman
+//                                 aktif anggota (belum digenerate resmi lewat
+//                                 generatePinjamanBulanIni untuk bulan ini)
 exports.getAnggotaByInstansi = async (req, res) => {
   try {
     const { instansi, bulan, tahun } = req.query;
@@ -691,6 +788,8 @@ exports.getAnggotaByInstansi = async (req, res) => {
     }
 
     const anggotaIds = anggotaList.map((a) => a.id);
+
+    // Baris yang sudah ada untuk bulan/tahun yang dipilih
     const existingRows = await PotonganGaji.findAll({
       where: { anggota_id: anggotaIds, bulan, tahun },
     });
@@ -699,8 +798,48 @@ exports.getAnggotaByInstansi = async (req, res) => {
       existingMap[p.anggota_id] = p;
     });
 
+    // Simpanan sukarela bulan sebelumnya, dipakai sebagai default
+    const { bulan: bulanLalu, tahun: tahunLalu } = getBulanSebelumnya(bulan, tahun);
+    let simpananSukarelaLaluMap = {};
+    if (bulanLalu && tahunLalu) {
+      const bulanLaluRows = await PotonganGaji.findAll({
+        where: { anggota_id: anggotaIds, bulan: bulanLalu, tahun: tahunLalu },
+        attributes: ["anggota_id", "simpanan_sukarela"],
+        raw: true,
+      });
+      bulanLaluRows.forEach((r) => {
+        simpananSukarelaLaluMap[r.anggota_id] = parseFloat(r.simpanan_sukarela) || 0;
+      });
+    }
+
+    // Pinjaman aktif bermetode potong-gaji, untuk pratinjau cicilan Uang
+    // Menengah. Kalau anggota tidak punya baris potongan untuk bulan ini
+    // sama sekali (belum pernah digenerate), tunjukkan pratinjau supaya
+    // bendahara tahu ada cicilan yang akan otomatis muncul lewat menu
+    // "Generate Potongan Pinjaman", tanpa perlu isi manual di sini.
+    const pinjamanAktifList = await Pinjaman.findAll({
+      where: {
+        anggota_id: anggotaIds,
+        status: "aktif",
+        metode_pembayaran: "potong_gaji",
+        sisa_angsuran: { [Op.gt]: 0 },
+      },
+    });
+    const pinjamanMap = {};
+    pinjamanAktifList.forEach((pj) => {
+      // Kalau anggota punya lebih dari satu pinjaman aktif, pratinjau di
+      // sini cukup pakai satu (yang pertama ditemukan) sebagai indikator
+      // "ada cicilan otomatis". Baris resmi untuk SEMUA pinjaman aktif
+      // tetap dibuat satu per satu lewat generatePinjamanBulanIni,
+      // sehingga sisa_angsuran masing-masing pinjaman tetap sinkron.
+      if (!pinjamanMap[pj.anggota_id]) pinjamanMap[pj.anggota_id] = pj;
+    });
+
     const data = anggotaList.map((a) => {
       const p = existingMap[a.id];
+      const defaultSimpananWajib = DEFAULT_SIMPANAN_WAJIB;
+      const defaultSimpananSukarela = simpananSukarelaLaluMap[a.id] || 0;
+
       const row = {
         anggota_id: a.id,
         no_anggota: a.no_anggota,
@@ -709,10 +848,34 @@ exports.getAnggotaByInstansi = async (req, res) => {
         sumber: p ? p.sumber : null,
         is_processed: p ? !!p.is_processed : false,
         keterangan: p ? p.keterangan || "" : "",
+        metode_potongan: p ? p.metode_potongan || {} : {},
+        default_simpanan_wajib: defaultSimpananWajib,
+        default_simpanan_sukarela: defaultSimpananSukarela,
+        pinjaman_preview: false,
       };
+
       FIELDS_POTONGAN.forEach((f) => {
         row[f] = p ? parseFloat(p[f]) || 0 : 0;
       });
+
+      // Hanya isi default & pratinjau kalau belum ada baris apa pun untuk
+      // anggota ini di bulan/tahun tersebut. Kalau sudah ada baris
+      // (manual atau pinjaman), nilai yang tersimpan itu yang jadi acuan
+      // -- jangan ditimpa default supaya data yang sudah diinput/diproses
+      // tidak berubah diam-diam.
+      if (!p) {
+        row.simpanan_wajib = defaultSimpananWajib;
+        row.simpanan_sukarela = defaultSimpananSukarela;
+
+        const pinjaman = pinjamanMap[a.id];
+        if (pinjaman) {
+          const { pokok, jasa } = hitungAngsuranUangMenengah(pinjaman.plafon, pinjaman.jangka_waktu);
+          row.utang_uang_menengah_pokok = pokok;
+          row.utang_uang_menengah_jasa = jasa;
+          row.pinjaman_preview = true;
+        }
+      }
+
       return row;
     });
 
@@ -761,11 +924,38 @@ exports.batchStore = async (req, res) => {
       });
 
       if (existing) {
-        if (existing.sumber === "pinjaman" || existing.is_processed) {
+        // Baris yang SUDAH diproses ke jurnal tetap terkunci total.
+        if (existing.is_processed) {
           skipped++;
           continue;
         }
-        const updates = { keterangan: row.keterangan || existing.keterangan, total };
+
+        if (existing.sumber === "pinjaman") {
+          const updates = {
+            keterangan: row.keterangan || existing.keterangan,
+            metode_potongan: row.metode_potongan || existing.metode_potongan || {},
+          };
+          FIELDS_POTONGAN.forEach((f) => {
+            if (PINJAMAN_PREVIEW_FIELDS.includes(f)) {
+              // abaikan nilai kiriman untuk 2 field ini, pertahankan nilai asli
+              updates[f] = parseFloat(existing[f]) || 0;
+            } else {
+              updates[f] = parseFloat(row[f]) || 0;
+            }
+          });
+          updates.total = FIELDS_POTONGAN.reduce((sum, f) => sum + (updates[f] || 0), 0);
+
+          await existing.update(updates, { transaction: t });
+          updated++;
+          continue;
+        }
+
+        // Baris manual biasa -- update seperti semula.
+        const updates = {
+          keterangan: row.keterangan || existing.keterangan,
+          metode_potongan: row.metode_potongan || {},
+          total,
+        };
         FIELDS_POTONGAN.forEach((f) => {
           updates[f] = parseFloat(row[f]) || 0;
         });
@@ -783,6 +973,7 @@ exports.batchStore = async (req, res) => {
           no_urut: (maxUrut || 0) + 1,
           sumber: "manual",
           keterangan: row.keterangan || null,
+          metode_potongan: row.metode_potongan || {},
           total,
           is_processed: false,
         };
@@ -946,6 +1137,11 @@ exports.exportPdf = async (req, res) => {
     const pengaturan = await PengaturanWebsite.findOne();
 
     // ── Field config ──
+    // FIX: kolom "waserba" dihapus. Field ini tidak ada di model
+    // PotonganGaji maupun FIELDS_POTONGAN -- item.waserba selalu
+    // undefined, jadi kolomnya di PDF selalu kosong. Kalau nanti memang
+    // dibutuhkan, tambahkan dulu kolomnya di model & alur input sebelum
+    // dimasukkan lagi ke sini.
     const fieldKeys = [
       "simpanan_wajib",
       "simpanan_sukarela",
@@ -1057,48 +1253,65 @@ exports.exportPdf = async (req, res) => {
       return y;
     };
 
-    // ── Lebar kolom (total ≈ 776, muat dalam contentWidth ≈ 801.89) ──
+    // ── Lebar kolom (total ≈ 736, muat dalam contentWidth ≈ 801.89) ──
     const colWidths = [
-      20,  // No
-      45,  // No. Anggota
-      105, // Nama
-      42,  // Plafon
+      42,  // No Anggota
+      32,  // No Urut
+      120, // Nama
+      50,  // Plafon
       22,  // JW
-      22,  // Ke
-      48,  // Simp. Wajib
-      48,  // Simp. Sukarela
-      52,  // Utang Barang Pokok
-      48,  // Utang Barang Jasa
-      55,  // Utang Uang Menengah Pokok
-      52,  // Utang Uang Menengah Jasa
-      52,  // Utang Uang Pendek Pokok
-      48,  // Utang Uang Pendek Jasa
-      48,  // Simpanan Pokok
-      58,  // Total
+      20,  // Ke
+      44,  // Simp. Wajib
+      44,  // Simp. Sukarela
+      44,  // Utang Brg. Pokok
+      42,  // Utang Brg. Jasa
+      48,  // Utang Uang Menengah Pokok
+      50,  // Utang Uang Menengah Jasa 2,75%
+      48,  // Utang Uang Pendek Pokok
+      50,  // Utang Uang Pendek Jasa 2,75%
+      42,  // Simp. Pokok
+      54,  // Jumlah
     ];
 
     const headers = [
-      "No", "No.\nAnggota", "Nama", "Plafon", "JW", "Ke",
-      "Simp.\nWajib", "Simp.\nSukarela", "Utang Brg\nPokok", "Utang Brg\nJasa",
-      "Utang Uang\nMenengah Pokok", "Utang Uang\nMenengah Jasa",
-      "Utang Uang\nPendek Pokok", "Utang Uang\nPendek Jasa",
-      "Simpanan\nPokok", "Total",
+      "No.\nAnggota",
+      "No.\nUrut",
+      "Nama",
+      "Plafon",
+      "JW",
+      "Ke",
+      "Simp.\nWajib",
+      "Simp.\nSukarela",
+      "Utang Brg.\nPokok",
+      "Utang Brg.\nJasa",
+      "Utang Uang\nMenengah\nPokok",
+      "Utang Uang\nMenengah\nJasa 2,75%",
+      "Utang Uang\nPendek\nPokok",
+      "Utang Uang\nPendek\nJasa 2,75%",
+      "Simp.\nPokok",
+      "Jumlah",
     ];
 
-    const HEADER_H = 32;
+    const HEADER_H = 34;
     const ROW_H = 18;
     const HEADER_FONT = 7;
     const BODY_FONT = 7.5;
+    const BORDER_COLOR = "#000000"; // garis pemisah tegas, cell putih polos
 
     const drawHeader = (y) => {
       let x = startX;
       for (let i = 0; i < headers.length; i++) {
-        doc.rect(x, y, colWidths[i], HEADER_H).fill("#495057").stroke();
+        // Cell putih saja, garis pemisah hitam.
+        // PENTING: pakai fillAndStroke(), BUKAN fill() lalu stroke() terpisah.
+        // .fill() menutup/mengonsumsi path saat itu juga, sehingga .stroke()
+        // setelahnya tidak punya path lagi untuk digambar — itu sebabnya
+        // sebelumnya cell terisi warna tapi garis tabelnya tidak pernah muncul.
+        doc.lineWidth(0.75).rect(x, y, colWidths[i], HEADER_H).fillAndStroke("#ffffff", BORDER_COLOR);
         doc
-          .fillColor("#fff")
+          .fillColor("#000")
           .fontSize(HEADER_FONT)
           .font("Helvetica-Bold")
-          .text(headers[i], x + 2, y + 2, {
+          .text(headers[i], x + 2, y + 4, {
             width: colWidths[i] - 4,
             align: i === 2 ? "left" : "center",
           });
@@ -1116,7 +1329,6 @@ exports.exportPdf = async (req, res) => {
       let rowY = drawKopAndTitle(namaInstansi);
       rowY = drawHeader(rowY);
 
-      // Subtotal khusus instansi ini
       const subtotal = {};
       fieldKeys.forEach((k) => (subtotal[k] = 0));
       let subtotalGrand = 0;
@@ -1130,10 +1342,12 @@ exports.exportPdf = async (req, res) => {
 
         const y = rowY;
         let x = startX;
-        const bgColor = idx % 2 === 0 ? "#ffffff" : "#f1f3f5";
 
+        // Semua baris: fill putih, garis pemisah hitam — tanpa selang-seling warna.
+        // fillAndStroke() dipakai supaya garis benar-benar tergambar (lihat
+        // catatan di drawHeader di atas soal kenapa fill()+stroke() terpisah gagal).
         for (let i = 0; i < colWidths.length; i++) {
-          doc.rect(x, y, colWidths[i], ROW_H).fill(bgColor).stroke("#dee2e6");
+          doc.lineWidth(0.75).rect(x, y, colWidths[i], ROW_H).fillAndStroke("#ffffff", BORDER_COLOR);
           x += colWidths[i];
         }
 
@@ -1145,9 +1359,21 @@ exports.exportPdf = async (req, res) => {
           x += colWidths[i];
         };
 
-        cellText(String(idx + 1), 0, "center");
-        cellText(item.anggota?.no_anggota || "-", 1, "center");
-        cellText((item.anggota?.nama || "-").substring(0, 26), 2, "left");
+        // Tanda (*) menandai komponen yang dipotong dari Tukin (bukan
+        // Gaji), sesuai catatan di panel Export frontend. Dibaca dari
+        // metode_potongan (field virtual di model, alias kolom
+        // sumber_field) -- default "gaji" kalau field tidak ada di peta.
+        const metodeItem = item.metode_potongan || {};
+        const isTukin = (field) => metodeItem[field] === "tukin";
+        const valWithMark = (field, val) => {
+          if (val <= 0) return "";
+          const text = formatRupiah(val);
+          return isTukin(field) ? `${text}*` : text;
+        };
+
+        cellText(item.anggota?.no_anggota || "-", 0, "center");
+        cellText(item.no_urut != null ? String(item.no_urut) : String(idx + 1), 1, "center");
+        cellText((item.anggota?.nama || "-").substring(0, 30), 2, "left");
         cellText(item.plafon ? formatRupiah(item.plafon) : "", 3, "right");
         cellText(item.jangka_waktu || "", 4, "center");
         cellText(item.angsuran_ke ? String(item.angsuran_ke) : "", 5, "center");
@@ -1155,13 +1381,13 @@ exports.exportPdf = async (req, res) => {
         fieldKeys.forEach((key, fi) => {
           const val = parseFloat(item[key]) || 0;
           subtotal[key] += val;
-          cellText(val > 0 ? formatRupiah(val) : "", 6 + fi, "right");
+          cellText(valWithMark(key, val), 6 + fi, "right");
         });
 
         subtotalGrand += parseFloat(item.total) || 0;
 
         doc.font("Helvetica-Bold");
-        cellText(formatRupiah(item.total), 15, "right");
+        cellText(formatRupiah(item.total), 15, "right"); // kolom Jumlah = index terakhir
 
         rowY += ROW_H;
       });
@@ -1178,7 +1404,7 @@ exports.exportPdf = async (req, res) => {
       let x = startX;
 
       for (let i = 0; i < colWidths.length; i++) {
-        doc.rect(x, y, colWidths[i], totalRowH).fill("#e9ecef").stroke("#adb5bd");
+        doc.lineWidth(0.75).rect(x, y, colWidths[i], totalRowH).fillAndStroke("#ffffff", BORDER_COLOR);
         x += colWidths[i];
       }
 
@@ -1196,15 +1422,14 @@ exports.exportPdf = async (req, res) => {
         x += colWidths[6 + fi];
       });
 
-      doc.text(formatRupiah(subtotalGrand), x + 3, y + 5, { width: colWidths[15] - 6, align: "right" });
+      doc.text(formatRupiah(subtotalGrand), x + 3, y + 5, { width: colWidths[colWidths.length - 1] - 6, align: "right" });
       rowY += totalRowH;
 
-      // ── Footer tanggal cetak per halaman instansi ──
       doc
         .fontSize(7)
         .font("Helvetica-Oblique")
         .fillColor("#555")
-        .text(`Dicetak: ${formatTanggalIndonesia(new Date())}`, startX, rowY + 10, {
+        .text(`Dicetak: ${formatTanggalIndonesia(new Date())}   (*) dipotong dari Tunjangan Kinerja (Tukin)`, startX, rowY + 10, {
           width: contentWidth,
           align: "right",
         });

@@ -50,7 +50,7 @@ exports.index = async (req, res) => {
 
     const { rows, count } = await Anggota.findAndCountAll({
       where,
-      order: [["created_at", "DESC"]],
+      order: [["id", "ASC"]],
       limit: perPage,
       offset: (page - 1) * perPage,
     });

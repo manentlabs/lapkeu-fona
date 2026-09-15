@@ -26,13 +26,30 @@ import {
   Building2,
   Save,
   Wand2,
+  RotateCcw,
+  Info,
+  PiggyBank,
+  Landmark,
 } from "lucide-react";
 
-const emptyFilters = { bulan: "", tahun: "", instansi: "" };
 const BULAN_LIST = [
   "Januari", "Februari", "Maret", "April", "Mei", "Juni",
   "Juli", "Agustus", "September", "Oktober", "November", "Desember",
 ];
+
+// ─── Default "seperti export PDF": bulan & tahun berjalan ─────
+// Dipakai sebagai nilai awal filter, form tambah manual, dan modal input
+// per instansi — supaya konsisten dengan periode yang otomatis dipakai
+// export PDF saat filter dikosongkan.
+const NOW = new Date();
+const CURRENT_BULAN = BULAN_LIST[NOW.getMonth()];
+const CURRENT_TAHUN = NOW.getFullYear();
+
+const defaultFilters = { bulan: CURRENT_BULAN, tahun: CURRENT_TAHUN, instansi: "" };
+
+// Harus sinkron dengan DEFAULT_SIMPANAN_WAJIB di backend
+// (controllers/potonganGajiController.js).
+const DEFAULT_SIMPANAN_WAJIB = 180000;
 
 function formatRupiah(value) {
   const num = parseFloat(value) || 0;
@@ -40,29 +57,64 @@ function formatRupiah(value) {
 }
 
 // ─── Sumber Kebenaran Tunggal untuk Field Potongan ─────────────
+// Dikelompokkan berurutan (semua "simpanan" dulu, baru "utang") supaya
+// tabel batch & form manual bisa menampilkan pengelompokan visual yang
+// jelas tanpa logika tambahan — lihat FIELD_GROUPS di bawah.
 const FIELD_CONFIG = [
-  { key: "simpanan_wajib", label: "Simpanan Wajib" },
-  { key: "simpanan_sukarela", label: "Simpanan Sukarela" },
-  { key: "utang_barang_pokok", label: "Utang Barang Pokok" },
-  { key: "utang_barang_jasa", label: "Utang Barang Jasa" },
-  { key: "utang_uang_menengah_pokok", label: "Utang Uang Menengah Pokok" },
-  { key: "utang_uang_menengah_jasa", label: "Utang Uang Menengah Jasa" },
-  { key: "utang_uang_pendek_pokok", label: "Utang Uang Pendek Pokok" },
-  { key: "utang_uang_pendek_jasa", label: "Utang Uang Pendek Jasa" },
-  { key: "simpanan_pokok", label: "Simpanan Pokok" },
+  { key: "simpanan_wajib", label: "Simpanan Wajib", group: "simpanan" },
+  { key: "simpanan_sukarela", label: "Simpanan Sukarela", group: "simpanan" },
+  { key: "simpanan_pokok", label: "Simpanan Pokok", group: "simpanan" },
+  { key: "utang_barang_pokok", label: "Utang Barang Pokok", group: "utang" },
+  { key: "utang_barang_jasa", label: "Utang Barang Jasa", group: "utang" },
+  { key: "utang_uang_menengah_pokok", label: "Utang Uang Menengah Pokok", group: "utang" },
+  { key: "utang_uang_menengah_jasa", label: "Utang Uang Menengah Jasa", group: "utang" },
+  { key: "utang_uang_pendek_pokok", label: "Utang Uang Pendek Pokok", group: "utang" },
+  { key: "utang_uang_pendek_jasa", label: "Utang Uang Pendek Jasa", group: "utang" },
 ];
 
 const FIELD_KEYS = FIELD_CONFIG.map((f) => f.key);
+
+// Field cicilan uang menengah yang bisa muncul sebagai "pratinjau otomatis
+// dari pinjaman" di modal Input per Instansi (lihat pinjaman_preview), dan
+// yang dikunci di form edit manual ketika baris berasal dari pinjaman
+// (sumber === "pinjaman").
+const PINJAMAN_PREVIEW_FIELDS = ["utang_uang_menengah_pokok", "utang_uang_menengah_jasa"];
+const isPinjamanLockedField = (key) => PINJAMAN_PREVIEW_FIELDS.includes(key);
+
+// Info tampilan per grup (dipakai di form manual & tabel batch)
+const GROUP_META = {
+  simpanan: { label: "Simpanan", icon: PiggyBank, chip: "bg-emerald-50 text-emerald-700", bar: "bg-emerald-500" },
+  utang: { label: "Utang", icon: Landmark, chip: "bg-amber-50 text-amber-700", bar: "bg-amber-500" },
+};
+
+// Dipecah jadi run yang berurutan per grup (dipakai untuk sekat visual di
+// form manual, dan colSpan header grup di tabel batch). Karena FIELD_CONFIG
+// di atas sudah disusun berurutan per grup, hasilnya cuma 2 entri:
+// [{ group: "simpanan", count: 3 }, { group: "utang", count: 6 }].
+const FIELD_GROUPS = FIELD_CONFIG.reduce((acc, { group }) => {
+  const last = acc[acc.length - 1];
+  if (last && last.group === group) {
+    last.count += 1;
+  } else {
+    acc.push({ group, count: 1 });
+  }
+  return acc;
+}, []);
 
 const emptyForm = {
   bulan: "",
   tahun: new Date().getFullYear(),
   keterangan: "",
+  metode_potongan: {},
   ...Object.fromEntries(FIELD_KEYS.map((k) => [k, 0])),
 };
 
 function rowTotal(row) {
   return FIELD_KEYS.reduce((sum, key) => sum + (parseFloat(row[key]) || 0), 0);
+}
+
+function metodeOf(metodeMap, key) {
+  return metodeMap && metodeMap[key] === "tukin" ? "tukin" : "gaji";
 }
 
 export default function PotonganGajiPage() {
@@ -72,11 +124,11 @@ export default function PotonganGajiPage() {
   const [summary, setSummary] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  const [filters, setFilters] = useState(emptyFilters);
-  const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
+  const [filters, setFilters] = useState(defaultFilters);
+  const [appliedFilters, setAppliedFilters] = useState(defaultFilters);
   const [filterOpen, setFilterOpen] = useState(true);
 
-  // State untuk dropdown instansi
+  // State untuk dropdown/autocomplete instansi
   const [instansiOptions, setInstansiOptions] = useState([]);
 
   // Modal form (tambah/edit manual per-anggota)
@@ -86,6 +138,12 @@ export default function PotonganGajiPage() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  // Sumber baris yang sedang diedit ("manual" | "pinjaman" | null). Dipakai
+  // untuk mengunci kolom Utang Uang Menengah Pokok/Jasa di form edit kalau
+  // baris berasal dari pinjaman — nilainya dihitung otomatis dari sisa
+  // angsuran dan tidak boleh diubah manual dari sini.
+  const [editingSumber, setEditingSumber] = useState(null);
 
   // Modal detail
   const [detailModalOpen, setDetailModalOpen] = useState(false);
@@ -103,8 +161,6 @@ export default function PotonganGajiPage() {
   const [bulkSimpananWajib, setBulkSimpananWajib] = useState("");
 
   const [exporting, setExporting] = useState(false);
-  const [processingId, setProcessingId] = useState(null);
-  const [processingAll, setProcessingAll] = useState(false);
 
   const isEditing = Boolean(editingId);
 
@@ -130,7 +186,7 @@ export default function PotonganGajiPage() {
     }
   }, []);
 
-  // ─── Fetch daftar instansi untuk dropdown ────────────────────
+  // ─── Fetch daftar instansi untuk dropdown/autocomplete ───────
   const fetchInstansiOptions = useCallback(async () => {
     try {
       const { data } = await api.get("/potongan-gaji/instansi");
@@ -141,7 +197,7 @@ export default function PotonganGajiPage() {
   }, []);
 
   useEffect(() => {
-    fetchData(1, emptyFilters);
+    fetchData(1, defaultFilters);
     fetchInstansiOptions();
   }, [fetchData, fetchInstansiOptions]);
 
@@ -159,9 +215,9 @@ export default function PotonganGajiPage() {
   };
 
   const resetFilters = () => {
-    setFilters(emptyFilters);
-    setAppliedFilters(emptyFilters);
-    fetchData(1, emptyFilters);
+    setFilters(defaultFilters);
+    setAppliedFilters(defaultFilters);
+    fetchData(1, defaultFilters);
   };
 
   const goToPage = (page) => {
@@ -192,11 +248,14 @@ export default function PotonganGajiPage() {
   // ─── Modal Form ─────────────────────────────────────────────
   const openCreateModal = () => {
     setEditingId(null);
+    setEditingSumber(null);
     setSelectedAnggota(null);
     setForm({
       ...emptyForm,
-      bulan: appliedFilters.bulan || "",
-      tahun: appliedFilters.tahun || new Date().getFullYear(),
+      bulan: appliedFilters.bulan || CURRENT_BULAN,
+      tahun: appliedFilters.tahun || CURRENT_TAHUN,
+      simpanan_wajib: DEFAULT_SIMPANAN_WAJIB,
+      metode_potongan: {},
     });
     setError("");
     setModalOpen(true);
@@ -204,6 +263,7 @@ export default function PotonganGajiPage() {
 
   const openEditForm = (item) => {
     setEditingId(item.id);
+    setEditingSumber(item.sumber || "manual");
     setSelectedAnggota({
       id: item.anggota_id,
       no_anggota: item.anggota?.no_anggota || "",
@@ -213,6 +273,10 @@ export default function PotonganGajiPage() {
       bulan: item.bulan,
       tahun: item.tahun,
       keterangan: item.keterangan || "",
+      // Backend mengembalikan metode_potongan lewat field virtual model
+      // (alias dari kolom sumber_field) -- normalisasi ke object kosong
+      // kalau belum pernah diisi, supaya toggle G/T selalu punya nilai.
+      metode_potongan: item.metode_potongan || {},
       ...Object.fromEntries(FIELD_KEYS.map((k) => [k, item[k] || 0])),
     });
     setError("");
@@ -220,6 +284,8 @@ export default function PotonganGajiPage() {
   };
 
   const handleFormChange = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+  const handleFormMetodeChange = (key, metode) =>
+    setForm((f) => ({ ...f, metode_potongan: { ...(f.metode_potongan || {}), [key]: metode } }));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -250,48 +316,6 @@ export default function PotonganGajiPage() {
       setError(err.response?.data?.message || "Terjadi kesalahan. Coba lagi.");
     } finally {
       setSaving(false);
-    }
-  };
-
-  // ─── Proses ke Jurnal ───────────────────────────────────────
-  const handleProcess = async (id) => {
-    if (!window.confirm("Proses potongan ini ke jurnal? Tindakan ini tidak bisa dibatalkan.")) return;
-    setProcessingId(id);
-    try {
-      await api.post(`/potongan-gaji/${id}/process`);
-      fetchData(pagination.page, appliedFilters);
-    } catch (err) {
-      alert(err.response?.data?.message || "Gagal memproses.");
-    } finally {
-      setProcessingId(null);
-    }
-  };
-
-  // ─── Proses Semua ke Jurnal ────────────────────────────────
-  const handleProcessAll = async () => {
-    if (!appliedFilters.bulan || !appliedFilters.tahun) {
-      alert("Terapkan filter Bulan & Tahun terlebih dahulu (di panel Filter & Export).");
-      return;
-    }
-    if (
-      !window.confirm(
-        `Proses SEMUA potongan yang belum diproses untuk ${appliedFilters.bulan} ${appliedFilters.tahun} ke jurnal?\n\nSetiap anggota akan dibuatkan transaksi terpisah (tidak digabung). Tindakan ini tidak bisa dibatalkan.`
-      )
-    )
-      return;
-    setProcessingAll(true);
-    try {
-      const { data } = await api.post("/potongan-gaji/process-all", {
-        bulan: appliedFilters.bulan,
-        tahun: appliedFilters.tahun,
-        instansi: appliedFilters.instansi || undefined,
-      });
-      alert(data.message);
-      fetchData(1, appliedFilters);
-    } catch (err) {
-      alert(err.response?.data?.message || "Gagal memproses semua potongan.");
-    } finally {
-      setProcessingAll(false);
     }
   };
 
@@ -399,8 +423,8 @@ export default function PotonganGajiPage() {
   // ─── Input per Instansi (batch) ────────────────────────────
   const openInstansiModal = () => {
     setSelectedInstansi("");
-    setInstansiBulan(appliedFilters.bulan || "");
-    setInstansiTahun(appliedFilters.tahun || new Date().getFullYear());
+    setInstansiBulan(appliedFilters.bulan || CURRENT_BULAN);
+    setInstansiTahun(appliedFilters.tahun || CURRENT_TAHUN);
     setInstansiAnggotaList([]);
     setInstansiError("");
     setBulkSimpananWajib("");
@@ -421,7 +445,14 @@ export default function PotonganGajiPage() {
         params: { instansi, bulan, tahun },
       });
       if (fetchId !== instansiFetchIdRef.current) return;
-      setInstansiAnggotaList(data.data || []);
+      // Backend sudah mengisi default (simpanan wajib, simpanan sukarela
+      // dari bulan lalu, & pratinjau cicilan pinjaman kalau ada) --
+      // tinggal pastikan metode_potongan selalu berupa object.
+      const normalized = (data.data || []).map((r) => ({
+        ...r,
+        metode_potongan: r.metode_potongan || {},
+      }));
+      setInstansiAnggotaList(normalized);
     } catch (err) {
       if (fetchId !== instansiFetchIdRef.current) return;
       setInstansiError(err.response?.data?.message || "Gagal mengambil data anggota.");
@@ -441,9 +472,64 @@ export default function PotonganGajiPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedInstansi, instansiBulan, instansiTahun, instansiModalOpen]);
 
+  const isRowLocked = (row) => Boolean(row.is_processed);
+  const isPreviewField = (row, key) => row.pinjaman_preview && PINJAMAN_PREVIEW_FIELDS.includes(key);
+  const isFieldLocked = (row, key) =>
+    isRowLocked(row) || (row.sumber === "pinjaman" && PINJAMAN_PREVIEW_FIELDS.includes(key));
+
   const handleInstansiRowChange = (anggotaId, key, value) => {
     setInstansiAnggotaList((prev) =>
       prev.map((r) => (r.anggota_id === anggotaId ? { ...r, [key]: value } : r))
+    );
+  };
+
+  const handleInstansiMetodeChange = (anggotaId, key, metode) => {
+    setInstansiAnggotaList((prev) =>
+      prev.map((r) =>
+        r.anggota_id === anggotaId
+          ? { ...r, metode_potongan: { ...(r.metode_potongan || {}), [key]: metode } }
+          : r
+      )
+    );
+  };
+
+  const setColumnMetodeForAll = (key, metode) => {
+    setInstansiAnggotaList((prev) =>
+      prev.map((r) => {
+        if (isFieldLocked(r, key) || isPreviewField(r, key)) return r;
+        return { ...r, metode_potongan: { ...(r.metode_potongan || {}), [key]: metode } };
+      })
+    );
+  };
+
+  // Preset sesuai contoh: Simpanan (wajib/sukarela/pokok) dari Tukin,
+  // semua Utang dari Gaji. Cocok untuk instansi yang membayar tukin rutin.
+  const applyPresetSimpananTukinUtangGaji = () => {
+    setInstansiAnggotaList((prev) =>
+      prev.map((r) => {
+        if (isRowLocked(r)) return r; // hanya skip kalau sudah diproses
+        const metode = { ...(r.metode_potongan || {}) };
+        FIELD_CONFIG.forEach(({ key, group }) => {
+          if (isPreviewField(r, key) || isFieldLocked(r, key)) return; // skip kolom menengah yg terkunci
+          metode[key] = group === "simpanan" ? "tukin" : "gaji";
+        });
+        return { ...r, metode_potongan: metode };
+      })
+    );
+  };
+
+  const resetMetodeSemua = () => {
+    setInstansiAnggotaList((prev) =>
+      prev.map((r) => {
+        if (isRowLocked(r)) return r;
+        const metode = {};
+        FIELD_CONFIG.forEach(({ key }) => {
+          if (isFieldLocked(r, key)) {
+            metode[key] = (r.metode_potongan || {})[key]; // biarkan metode kolom terkunci apa adanya
+          }
+        });
+        return { ...r, metode_potongan: metode };
+      })
     );
   };
 
@@ -451,25 +537,39 @@ export default function PotonganGajiPage() {
     const raw = bulkSimpananWajib.replace(/[^\d]/g, "");
     if (!raw) return;
     setInstansiAnggotaList((prev) =>
-      prev.map((r) =>
-        r.is_processed || r.sumber === "pinjaman" ? r : { ...r, simpanan_wajib: raw }
-      )
+      prev.map((r) => (isRowLocked(r) ? r : { ...r, simpanan_wajib: raw }))
     );
   };
 
   const instansiGrandTotal = instansiAnggotaList.reduce((sum, r) => sum + rowTotal(r), 0);
   const instansiRowsFilled = instansiAnggotaList.filter((r) => rowTotal(r) > 0).length;
-  const instansiEditableCount = instansiAnggotaList.filter(
-    (r) => !r.is_processed && r.sumber !== "pinjaman"
-  ).length;
+  const instansiEditableCount = instansiAnggotaList.filter((r) => !isRowLocked(r)).length;
+  const instansiHasPreview = instansiAnggotaList.some((r) => r.pinjaman_preview);
 
   const handleInstansiBatchSubmit = async () => {
     setInstansiError("");
-    const editableRows = instansiAnggotaList.filter((r) => !r.is_processed && r.sumber !== "pinjaman");
+    const editableRows = instansiAnggotaList.filter((r) => !isRowLocked(r));
+
     const rowsToSend = editableRows
+      .map((r) => {
+        // Cicilan uang menengah yang berasal dari pratinjau pinjaman TIDAK
+        // ikut dikirim dari sini — baris resminya dibuat lewat alur
+        // generate pinjaman terpisah supaya tidak dobel & tetap sinkron
+        // dengan sisa_angsuran pinjaman.
+        const clean = { ...r };
+        if (r.pinjaman_preview) {
+          clean.utang_uang_menengah_pokok = 0;
+          clean.utang_uang_menengah_jasa = 0;
+        }
+        return clean;
+      })
       .filter((r) => rowTotal(r) > 0)
       .map((r) => {
-        const payload = { anggota_id: r.anggota_id, keterangan: r.keterangan || "" };
+        const payload = {
+          anggota_id: r.anggota_id,
+          keterangan: r.keterangan || "",
+          metode_potongan: r.metode_potongan || {},
+        };
         FIELD_KEYS.forEach((key) => {
           payload[key] = parseFloat(r[key]) || 0;
         });
@@ -512,15 +612,6 @@ export default function PotonganGajiPage() {
             </div>
             <div className="flex flex-wrap gap-2">
               <button
-                onClick={handleProcessAll}
-                disabled={processingAll}
-                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
-                title="Proses semua potongan yang belum diproses untuk bulan/tahun yang sedang difilter"
-              >
-                {processingAll ? <Loader size={16} className="animate-spin" /> : <CheckCircle size={16} />}
-                Proses Semua
-              </button>
-              <button
                 onClick={openInstansiModal}
                 className="flex items-center gap-1.5 rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700"
               >
@@ -536,10 +627,14 @@ export default function PotonganGajiPage() {
               </button>
             </div>
           </div>
+          <p className="mt-3 flex items-start gap-1.5 text-xs text-gray-400">
+            <Info size={13} className="mt-0.5 shrink-0" />
+            Proses ke jurnal sekarang dilakukan dari halaman Transaksi, bukan dari sini.
+          </p>
         </div>
 
         {/* Ringkasan (halaman aktif) */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <SummaryCard
             label="Anggota (Halaman Ini)"
             value={anggotaUnikHalaman}
@@ -622,25 +717,20 @@ export default function PotonganGajiPage() {
                         type="number"
                         value={filters.tahun}
                         onChange={(e) => handleFilterChange("tahun", e.target.value)}
-                        placeholder={String(new Date().getFullYear())}
+                        placeholder={String(CURRENT_TAHUN)}
                         className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
                     <div>
                       <label className="block text-xs text-gray-500 mb-1">Instansi</label>
-                      <select
+                      <InstansiAutocomplete
                         value={filters.instansi}
-                        onChange={(e) => handleFilterChange("instansi", e.target.value)}
-                        className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-                      >
-                        <option value="">Semua Instansi</option>
-                        {instansiOptions.map((i) => (
-                          <option key={i} value={i}>{i}</option>
-                        ))}
-                      </select>
+                        onChange={(v) => handleFilterChange("instansi", v)}
+                        options={instansiOptions}
+                      />
                     </div>
                   </div>
-                  <div className="flex gap-2 mt-3">
+                  <div className="flex flex-wrap gap-2 mt-3">
                     <button
                       onClick={applyFilters}
                       className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
@@ -651,7 +741,7 @@ export default function PotonganGajiPage() {
                       onClick={resetFilters}
                       className="flex items-center gap-1.5 px-4 py-2 border rounded-lg text-sm hover:bg-gray-50"
                     >
-                      <XCircle size={15} /> Reset
+                      <XCircle size={15} /> Reset ke {CURRENT_BULAN} {CURRENT_TAHUN}
                     </button>
                   </div>
                 </div>
@@ -678,7 +768,8 @@ export default function PotonganGajiPage() {
                     Export PDF
                   </button>
                   <p className="text-xs text-gray-400 flex items-center gap-1">
-                    <AlertCircle size={12} /> Export mengikuti filter bulan/tahun & instansi di atas.
+                    <AlertCircle size={12} /> Export mengikuti filter bulan/tahun & instansi di atas. PDF menandai
+                    komponen yang dipotong dari Tukin dengan tanda (*).
                   </p>
                 </div>
               </div>
@@ -756,7 +847,11 @@ export default function PotonganGajiPage() {
                         >
                           <Eye size={16} />
                         </button>
-                        {!item.is_processed && item.sumber === "manual" && (
+                        {/* Edit boleh untuk manual maupun otomatis (pinjaman)
+                            selama belum diproses. Untuk baris pinjaman, kolom
+                            Utang Uang Menengah Pokok/Jasa dikunci di dalam
+                            form karena dihitung otomatis dari sisa angsuran. */}
+                        {!item.is_processed && (
                           <button
                             onClick={() => openEditForm(item)}
                             className="flex h-8 w-8 items-center justify-center rounded-lg text-blue-600 hover:bg-blue-50"
@@ -765,20 +860,9 @@ export default function PotonganGajiPage() {
                             <Pencil size={16} />
                           </button>
                         )}
-                        {!item.is_processed && (
-                          <button
-                            onClick={() => handleProcess(item.id)}
-                            disabled={processingId === item.id}
-                            className="flex h-8 w-8 items-center justify-center rounded-lg text-green-600 hover:bg-green-50 disabled:opacity-50"
-                            title="Proses ke Jurnal"
-                          >
-                            {processingId === item.id ? (
-                              <Loader size={16} className="animate-spin" />
-                            ) : (
-                              <CheckCircle size={16} />
-                            )}
-                          </button>
-                        )}
+                        {/* Hapus tetap hanya untuk manual — baris pinjaman
+                            harus dihapus lewat alur generate pinjaman supaya
+                            sisa angsuran tetap sinkron. */}
                         {!item.is_processed && item.sumber === "manual" && (
                           <button
                             onClick={() => handleDelete(item)}
@@ -852,10 +936,10 @@ export default function PotonganGajiPage() {
                   </button>
                   {!item.is_processed && (
                     <button
-                      onClick={() => handleProcess(item.id)}
-                      className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-green-600 px-3 py-2 text-sm text-white hover:bg-green-700"
+                      onClick={() => openEditForm(item)}
+                      className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-600 hover:bg-gray-100"
                     >
-                      <CheckCircle size={15} /> Proses
+                      <Pencil size={15} /> Edit
                     </button>
                   )}
                 </div>
@@ -877,16 +961,16 @@ export default function PotonganGajiPage() {
 
       {/* ─── MODAL DETAIL ──────────────────────────────────────── */}
       {detailModalOpen && detailItem && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-white">
-          <div className="flex items-center justify-between border-b px-4 py-4 sm:px-8">
-            <h3 className="text-lg font-semibold text-gray-800 sm:text-xl">
+        <ModalShell onClose={closeDetailModal}>
+          <div className="flex items-center justify-between border-b px-4 py-4 sm:px-6">
+            <h3 className="text-lg font-semibold text-gray-800">
               Detail Potongan: {detailItem.anggota?.no_anggota} - {detailItem.anggota?.nama}
             </h3>
             <button onClick={closeDetailModal} className="rounded-lg p-2 text-gray-500 hover:bg-gray-100">
               <X size={20} />
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+          <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
             <div className="mx-auto max-w-2xl space-y-4">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm text-gray-500">{detailItem.bulan} {detailItem.tahun}</span>
@@ -930,33 +1014,62 @@ export default function PotonganGajiPage() {
                 </div>
               )}
 
-              <div className="overflow-hidden rounded-lg border">
-                <table className="min-w-full text-sm">
-                  <tbody className="divide-y">
-                    {FIELD_CONFIG.map(({ key, label }) => (
-                      <tr key={key}>
-                        <td className="px-4 py-2.5 text-gray-500">{label}</td>
-                        <td className="px-4 py-2.5 text-right font-mono">Rp {formatRupiah(detailItem[key])}</td>
-                      </tr>
-                    ))}
-                    <tr className="bg-gray-50 font-semibold">
-                      <td className="px-4 py-2.5">Jumlah</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-green-700">Rp {formatRupiah(detailItem.total)}</td>
-                    </tr>
-                  </tbody>
-                </table>
+              {/* Rincian dikelompokkan Simpanan / Utang, konsisten dengan
+                  pengelompokan di tabel batch & form manual. */}
+              {FIELD_GROUPS.map(({ group }) => {
+                const meta = GROUP_META[group];
+                const GroupIcon = meta.icon;
+                const fieldsInGroup = FIELD_CONFIG.filter((f) => f.group === group);
+                return (
+                  <div key={group} className="overflow-hidden rounded-lg border">
+                    <div className={`flex items-center gap-1.5 px-4 py-2 text-xs font-semibold ${meta.chip}`}>
+                      <GroupIcon size={13} /> {meta.label}
+                    </div>
+                    <table className="min-w-full text-sm">
+                      <tbody className="divide-y">
+                        {fieldsInGroup.map(({ key, label }) => {
+                          const metode = metodeOf(detailItem.metode_potongan, key);
+                          return (
+                            <tr key={key}>
+                              <td className="px-4 py-2.5 text-gray-500">
+                                <div className="flex items-center gap-2">
+                                  {label}
+                                  <span
+                                    className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                                      metode === "tukin" ? "bg-purple-100 text-purple-600" : "bg-gray-100 text-gray-500"
+                                    }`}
+                                  >
+                                    {metode === "tukin" ? "Tukin" : "Gaji"}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-2.5 text-right font-mono">Rp {formatRupiah(detailItem[key])}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })}
+
+              <div className="flex items-center justify-between rounded-lg bg-gray-50 px-4 py-3">
+                <span className="text-sm font-medium text-gray-600">Jumlah</span>
+                <span className="font-bold text-green-700">Rp {formatRupiah(detailItem.total)}</span>
               </div>
             </div>
           </div>
-          <div className="flex justify-end gap-2 border-t px-4 py-4 sm:px-8">
-            {!detailItem.is_processed && detailItem.sumber === "manual" && (
+          <div className="flex justify-end gap-2 border-t px-4 py-4 sm:px-6">
+            {!detailItem.is_processed && (
               <>
-                <button
-                  onClick={() => deleteFromDetail(detailItem)}
-                  className="flex items-center gap-1.5 rounded-lg border border-red-200 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50"
-                >
-                  <Trash2 size={15} /> Hapus
-                </button>
+                {detailItem.sumber === "manual" && (
+                  <button
+                    onClick={() => deleteFromDetail(detailItem)}
+                    className="flex items-center gap-1.5 rounded-lg border border-red-200 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50"
+                  >
+                    <Trash2 size={15} /> Hapus
+                  </button>
+                )}
                 <button
                   onClick={() => editFromDetail(detailItem)}
                   className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-5 py-2.5 text-sm text-white hover:bg-blue-700"
@@ -969,26 +1082,35 @@ export default function PotonganGajiPage() {
               Tutup
             </button>
           </div>
-        </div>
+        </ModalShell>
       )}
 
       {/* ─── MODAL FORM (TAMBAH/EDIT MANUAL) ──────────────────── */}
       {modalOpen && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-white">
-          <div className="flex items-center justify-between border-b px-4 py-4 sm:px-8">
-            <h3 className="text-lg font-semibold text-gray-800 sm:text-xl">
-              {isEditing ? "Edit Potongan Manual" : "Tambah Potongan Manual"}
+        <ModalShell onClose={() => setModalOpen(false)}>
+          <div className="flex items-center justify-between border-b px-4 py-4 sm:px-6">
+            <h3 className="text-lg font-semibold text-gray-800">
+              {isEditing ? "Edit Potongan" : "Tambah Potongan Manual"}
             </h3>
             <button onClick={() => setModalOpen(false)} className="rounded-lg p-2 text-gray-500 hover:bg-gray-100">
               <X size={20} />
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+          <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
             <form id="potongan-form" onSubmit={handleSubmit} className="mx-auto max-w-2xl space-y-4">
               {error && (
                 <div className="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
                   <AlertCircle size={15} className="mt-0.5 shrink-0" />
                   {error}
+                </div>
+              )}
+
+              {isEditing && editingSumber === "pinjaman" && (
+                <div className="flex items-start gap-2 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                  <Info size={14} className="mt-0.5 shrink-0" />
+                  Data ini berasal dari pinjaman aktif. Kolom <strong>Utang Uang Menengah Pokok</strong> dan{" "}
+                  <strong>Utang Uang Menengah Jasa</strong> dikunci karena dihitung otomatis dari sisa angsuran —
+                  ubah lewat menu generate potongan pinjaman, bukan dari sini.
                 </div>
               )}
 
@@ -1060,24 +1182,61 @@ export default function PotonganGajiPage() {
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-                {FIELD_CONFIG.map(({ key, label }) => (
-                  <div key={key}>
-                    <label className="mb-1 block text-sm text-gray-700">{label}</label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      value={form[key] ? Number(form[key]).toLocaleString("id-ID") : ""}
-                      onChange={(e) => {
-                        const raw = e.target.value.replace(/[^\d]/g, "");
-                        handleFormChange(key, raw);
-                      }}
-                      placeholder="0"
-                      className="w-full rounded-lg border px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                    />
+              {/* Field dikelompokkan Simpanan / Utang dengan sekat berlabel,
+                  supaya 9 input tidak terasa seperti satu tembok datar. Kolom
+                  Utang Uang Menengah Pokok/Jasa dikunci kalau baris yang
+                  diedit berasal dari pinjaman (sumber === "pinjaman"). */}
+              {FIELD_GROUPS.map(({ group }) => {
+                const meta = GROUP_META[group];
+                const GroupIcon = meta.icon;
+                const fieldsInGroup = FIELD_CONFIG.filter((f) => f.group === group);
+                return (
+                  <div key={group} className="pt-2">
+                    <div className={`mb-2 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${meta.chip}`}>
+                      <GroupIcon size={12} /> {meta.label}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {fieldsInGroup.map(({ key, label }) => {
+                        const fieldLocked =
+                          isEditing && editingSumber === "pinjaman" && isPinjamanLockedField(key);
+                        return (
+                          <div key={key}>
+                            <div className="mb-1 flex items-center justify-between">
+                              <label className="flex items-center gap-1.5 text-sm text-gray-700">
+                                {label}
+                                {fieldLocked && <Lock size={12} className="text-gray-400" />}
+                              </label>
+                              <MetodeToggle
+                                value={metodeOf(form.metode_potongan, key)}
+                                onChange={(m) => handleFormMetodeChange(key, m)}
+                                disabled={fieldLocked}
+                              />
+                            </div>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              disabled={fieldLocked}
+                              value={form[key] ? Number(form[key]).toLocaleString("id-ID") : ""}
+                              onChange={(e) => {
+                                const raw = e.target.value.replace(/[^\d]/g, "");
+                                handleFormChange(key, raw);
+                              }}
+                              placeholder="0"
+                              className={`w-full rounded-lg border px-3 py-2 text-sm focus:border-blue-500 focus:outline-none ${
+                                fieldLocked ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""
+                              }`}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                ))}
-              </div>
+                );
+              })}
+              <p className="text-xs text-gray-400 flex items-center gap-1">
+                <Info size={12} /> Tombol <strong>G</strong>/<strong>T</strong> di tiap komponen menandai apakah
+                potongan itu diambil dari Gaji atau Tunjangan Kinerja — bisa dicampur bebas per komponen.
+              </p>
 
               <div className="rounded-lg bg-gray-50 px-4 py-3 flex justify-between items-center">
                 <span className="text-sm text-gray-500">Total</span>
@@ -1087,7 +1246,7 @@ export default function PotonganGajiPage() {
               </div>
             </form>
           </div>
-          <div className="flex justify-end gap-2 border-t px-4 py-4 sm:px-8">
+          <div className="flex justify-end gap-2 border-t px-4 py-4 sm:px-6">
             <button
               type="button"
               onClick={() => setModalOpen(false)}
@@ -1104,25 +1263,26 @@ export default function PotonganGajiPage() {
               {saving ? "Menyimpan…" : "Simpan"}
             </button>
           </div>
-        </div>
+        </ModalShell>
       )}
 
       {/* ─── MODAL INPUT PER INSTANSI (BATCH) ─────────────────── */}
       {instansiModalOpen && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-white">
-          <div className="flex items-center justify-between border-b px-4 py-4 sm:px-8">
+        <ModalShell onClose={() => setInstansiModalOpen(false)}>
+          <div className="flex items-center justify-between border-b px-4 py-4 sm:px-6">
             <div>
-              <h3 className="text-lg font-semibold text-gray-800 sm:text-xl">Input Potongan per Instansi</h3>
+              <h3 className="text-lg font-semibold text-gray-800">Input Potongan per Instansi</h3>
               <p className="text-xs text-gray-500 mt-0.5">
-                Pilih instansi, semua anggota aktifnya akan muncul — isi simpanan/utang lalu simpan sekaligus.
+                Pilih instansi — simpanan wajib, simpanan sukarela, dan cicilan pinjaman (kalau ada) sudah
+                terisi otomatis. Cukup periksa lalu simpan.
               </p>
             </div>
-            <button onClick={() => setInstansiModalOpen(false)} className="rounded-lg p-2 text-gray-500 hover:bg-gray-100">
+            <button onClick={() => setInstansiModalOpen(false)} className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 shrink-0">
               <X size={20} />
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8 space-y-4">
+          <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 space-y-4">
             {instansiError && (
               <div className="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
                 <AlertCircle size={15} className="mt-0.5 shrink-0" />
@@ -1184,19 +1344,19 @@ export default function PotonganGajiPage() {
               </div>
             ) : (
               <>
-                {/* Isi cepat: Simpanan Wajib untuk semua anggota sekaligus */}
+                {/* Override cepat + preset metode */}
                 <div className="flex flex-wrap items-end gap-2 rounded-lg border border-purple-200 bg-purple-50 p-3">
                   <div className="min-w-[220px] flex-1">
                     <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-gray-600">
                       <Wand2 size={13} className="text-purple-600" />
-                      Isi Simpanan Wajib untuk Semua Anggota
+                      Ubah Simpanan Wajib untuk Semua Anggota
                     </label>
                     <input
                       type="text"
                       inputMode="numeric"
                       value={bulkSimpananWajib ? Number(bulkSimpananWajib).toLocaleString("id-ID") : ""}
                       onChange={(e) => setBulkSimpananWajib(e.target.value.replace(/[^\d]/g, ""))}
-                      placeholder="Misal: 180.000"
+                      placeholder={`Default: ${DEFAULT_SIMPANAN_WAJIB.toLocaleString("id-ID")}`}
                       className="w-full rounded-lg border px-3 py-2 text-sm focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
                     />
                   </div>
@@ -1210,62 +1370,179 @@ export default function PotonganGajiPage() {
                   </button>
                 </div>
                 <p className="text-xs text-gray-400">
-                  Nilai ini otomatis mengisi kolom <strong>Simpanan Wajib</strong> untuk semua anggota yang belum
-                  diproses / bukan dari pinjaman. Anda tetap bisa mengubah nilai satu per satu di tabel bila ada
-                  anggota dengan nominal berbeda.
+                  Simpanan Wajib sudah otomatis diisi <strong>Rp {formatRupiah(DEFAULT_SIMPANAN_WAJIB)}</strong> dan
+                  Simpanan Sukarela mengikuti nilai bulan lalu masing-masing anggota — sama seperti komponen lain,
+                  nilainya sudah terisi otomatis tapi tetap bisa diubah langsung di kotak input pada tabel. Gunakan
+                  kotak di atas kalau mau mengganti nilai Simpanan Wajib yang sama untuk semua anggota sekaligus.
                 </p>
+
+                {/* Preset metode gaji/tukin */}
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-white p-3">
+                  <span className="text-xs font-medium text-gray-600 mr-1">Metode Potongan:</span>
+                  <button
+                    type="button"
+                    onClick={applyPresetSimpananTukinUtangGaji}
+                    className="rounded-lg border border-purple-300 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-100"
+                  >
+                    Preset: Simpanan dari Tukin, Utang dari Gaji
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetMetodeSemua}
+                    className="rounded-lg border px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                  >
+                    <RotateCcw size={12} className="inline mr-1 -mt-0.5" />
+                    Reset Semua ke Gaji
+                  </button>
+                  <span className="text-xs text-gray-400">
+                    atau atur per komponen lewat tombol <strong>Semua G</strong>/<strong>Semua T</strong> di judul
+                    kolom, maupun tombol <strong>G</strong>/<strong>T</strong> per anggota di tabel.
+                  </span>
+                </div>
+
+                {instansiHasPreview && (
+                  <p className="flex items-start gap-1.5 text-xs text-blue-600 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                    <Info size={13} className="mt-0.5 shrink-0" />
+                    Kolom Utang Uang Menengah bertanda <strong>"Otomatis pinjaman"</strong> hanya pratinjau cicilan
+                    dari pinjaman aktif anggota. Nilai itu tidak ikut tersimpan dari sini — baris resminya dibuat
+                    lewat menu generate potongan pinjaman, supaya sisa angsuran tetap sinkron.
+                  </p>
+                )}
 
                 <div className="flex items-center justify-between text-sm text-gray-500">
                   <span>{instansiAnggotaList.length} anggota &middot; {instansiRowsFilled} baris sudah diisi</span>
                   <span className="font-semibold text-green-700">Total: Rp {formatRupiah(instansiGrandTotal)}</span>
                 </div>
-                <div className="overflow-auto max-h-[400px] rounded-lg border">
+                <div className="overflow-auto max-h-[65vh] rounded-lg border">
                   <table className="min-w-full text-sm">
-                    <thead className="bg-gray-50 text-gray-600 sticky top-0 z-10">
+                    <thead className="text-gray-600 sticky top-0 z-10">
+                      {/* Baris grup: label Simpanan / Utang membentang di atas
+                          kolom-kolom terkait, supaya tabel yang lebar (9 kolom
+                          input) tetap terbaca sekilas tanpa harus mengikuti
+                          tiap header satu-satu. */}
                       <tr>
-                        <th className="px-3 py-2 text-left sticky left-0 bg-gray-100 min-w-[180px] z-20 border-r">
+                        <th
+                          rowSpan={2}
+                          className="px-3 py-2 text-left sticky left-0 top-0 bg-gray-100 min-w-[180px] z-20 border-r align-bottom"
+                        >
                           Anggota
                         </th>
-                        {FIELD_CONFIG.map(({ key, label }) => (
-                          <th key={key} className="px-2 py-2 text-right whitespace-nowrap min-w-[150px]">
-                            {label}
-                          </th>
-                        ))}
-                        <th className="px-3 py-2 text-right whitespace-nowrap">Total</th>
-                        <th className="px-3 py-2 text-center whitespace-nowrap">Status</th>
+                        {FIELD_GROUPS.map(({ group, count }) => {
+                          const meta = GROUP_META[group];
+                          const GroupIcon = meta.icon;
+                          return (
+                            <th
+                              key={group}
+                              colSpan={count}
+                              className={`px-2 py-1.5 text-center text-xs font-semibold border-b border-l ${meta.chip}`}
+                            >
+                              <span className="inline-flex items-center gap-1">
+                                <GroupIcon size={12} /> {meta.label}
+                              </span>
+                            </th>
+                          );
+                        })}
+                        <th rowSpan={2} className="px-3 py-2 text-right whitespace-nowrap bg-gray-50 align-bottom">Total</th>
+                        <th rowSpan={2} className="px-3 py-2 text-center whitespace-nowrap bg-gray-50 align-bottom">Status</th>
+                      </tr>
+                      <tr className="bg-gray-50">
+                        {FIELD_CONFIG.map(({ key, label, group }, idx) => {
+                          const isGroupStart = idx === 0 || FIELD_CONFIG[idx - 1].group !== group;
+                          return (
+                            <th
+                              key={key}
+                              className={`px-2 py-2 text-right whitespace-nowrap min-w-[160px] align-top ${
+                                isGroupStart ? "border-l" : ""
+                              }`}
+                            >
+                              <div>{label}</div>
+                              <div className="mt-1 flex justify-end gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setColumnMetodeForAll(key, "gaji")}
+                                  className="rounded border bg-white px-1.5 py-0.5 text-[10px] font-normal text-gray-500 hover:bg-gray-50"
+                                  title="Set kolom ini ke Gaji untuk semua anggota"
+                                >
+                                  Semua G
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setColumnMetodeForAll(key, "tukin")}
+                                  className="rounded border bg-white px-1.5 py-0.5 text-[10px] font-normal text-gray-500 hover:bg-gray-50"
+                                  title="Set kolom ini ke Tukin untuk semua anggota"
+                                >
+                                  Semua T
+                                </button>
+                              </div>
+                            </th>
+                          );
+                        })}
                       </tr>
                     </thead>
                     <tbody className="divide-y">
                       {instansiAnggotaList.map((row) => {
-                        const locked = row.is_processed || row.sumber === "pinjaman";
+                        const locked = isRowLocked(row); // tetap dipakai untuk styling baris yg sudah diproses
                         return (
                           <tr key={row.anggota_id} className={locked ? "bg-gray-50" : "hover:bg-gray-50"}>
-                            <td className="px-3 py-2 sticky left-0 bg-white min-w-[180px] border-r">
+                            <td className="px-3 py-2 sticky left-0 bg-white min-w-[180px] border-r align-top">
                               <p className="font-medium text-gray-800">{row.nama}</p>
                               <p className="text-xs text-gray-400">{row.no_anggota}</p>
                             </td>
-                            {FIELD_CONFIG.map(({ key }) => (
-                              <td key={key} className="px-2 py-2">
-                                <input
-                                  type="text"
-                                  inputMode="numeric"
-                                  disabled={locked}
-                                  value={row[key] ? Number(row[key]).toLocaleString("id-ID") : ""}
-                                  onChange={(e) => {
-                                    const raw = e.target.value.replace(/[^\d]/g, "");
-                                    handleInstansiRowChange(row.anggota_id, key, raw);
-                                  }}
-                                  placeholder="0"
-                                  className={`w-32 text-right border rounded px-2 py-1 text-sm focus:ring-2 focus:ring-purple-500 ${
-                                    locked ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""
-                                  }`}
-                                />
-                              </td>
-                            ))}
-                            <td className="px-3 py-2 text-right font-mono font-semibold text-green-700">
+                            {FIELD_CONFIG.map(({ key, group }, idx) => {
+                              const isGroupStart = idx === 0 || FIELD_CONFIG[idx - 1].group !== group;
+                              const preview = isPreviewField(row, key);
+                              const fieldLocked = isFieldLocked(row, key);
+
+                              // Semua kolom (termasuk Simpanan Wajib &
+                              // Simpanan Sukarela) dirender seragam: input
+                              // angka + toggle G/T. Nilai default (dari
+                              // backend: DEFAULT_SIMPANAN_WAJIB & simpanan
+                              // sukarela bulan lalu) sudah terisi di
+                              // row[key] sejak awal — tidak ada tombol reset
+                              // khusus lagi, sama seperti kolom Utang.
+                              return (
+                                <td key={key} className={`px-2 py-2 align-top ${isGroupStart ? "border-l" : ""}`}>
+                                  {preview ? (
+                                    <div className="w-32">
+                                      <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-right text-sm font-mono text-blue-700">
+                                        {formatRupiah(row[key])}
+                                      </div>
+                                      <p className="mt-0.5 text-[10px] text-blue-500 leading-tight">Otomatis pinjaman</p>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        disabled={fieldLocked}
+                                        value={row[key] ? Number(row[key]).toLocaleString("id-ID") : ""}
+                                        onChange={(e) => {
+                                          const raw = e.target.value.replace(/[^\d]/g, "");
+                                          handleInstansiRowChange(row.anggota_id, key, raw);
+                                        }}
+                                        placeholder="0"
+                                        className={`w-28 text-right border rounded px-2 py-1 text-sm focus:ring-2 focus:ring-purple-500 ${
+                                          fieldLocked ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""
+                                        }`}
+                                      />
+                                      {!fieldLocked && (
+                                        <div className="mt-1 flex justify-end">
+                                          <MetodeToggle
+                                            value={metodeOf(row.metode_potongan, key)}
+                                            onChange={(m) => handleInstansiMetodeChange(row.anggota_id, key, m)}
+                                          />
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                </td>
+                              );
+                            })}
+
+                            <td className="px-3 py-2 text-right font-mono font-semibold text-green-700 align-top">
                               {formatRupiah(rowTotal(row))}
                             </td>
-                            <td className="px-3 py-2 text-center">
+                            <td className="px-3 py-2 text-center align-top">
                               {row.is_processed ? (
                                 <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
                                   Diproses
@@ -1291,15 +1568,16 @@ export default function PotonganGajiPage() {
                   </table>
                 </div>
                 <p className="text-xs text-gray-400">
-                  Baris berstatus <strong>Pinjaman</strong> atau <strong>Diproses</strong> tidak bisa diubah dari sini.
-                  Baris <strong>Sudah diisi</strong> (manual, belum diproses) akan diperbarui kalau nilainya diubah.
-                  Baris kosong akan dilewati otomatis.
+                  Baris berstatus <strong>Diproses</strong> terkunci sepenuhnya dan tidak bisa diubah dari sini. Baris
+                  berstatus <strong>Pinjaman</strong> hanya mengunci kolom <strong>Utang Uang Menengah</strong> (pokok & jasa)
+                  — kolom simpanan dan utang lainnya tetap bisa diisi/diubah. Baris <strong>Sudah diisi</strong> (manual,
+                  belum diproses) akan diperbarui kalau nilainya diubah. Baris kosong akan dilewati otomatis.
                 </p>
               </>
             )}
           </div>
 
-          <div className="flex justify-end gap-2 border-t px-4 py-4 sm:px-8">
+          <div className="flex justify-end gap-2 border-t px-4 py-4 sm:px-6">
             <button
               type="button"
               onClick={() => setInstansiModalOpen(false)}
@@ -1322,9 +1600,149 @@ export default function PotonganGajiPage() {
               )}
             </button>
           </div>
-        </div>
+        </ModalShell>
       )}
     </DashboardLayout>
+  );
+}
+
+// ─── Kerangka Modal (full layar di semua ukuran) ───────────────
+// Dipakai oleh ketiga modal (Detail, Form, Input per Instansi) supaya
+// perilakunya konsisten: klik di backdrop tidak lagi relevan karena modal
+// menutupi seluruh layar, tapi tetap dipertahankan (stopPropagation di
+// panel) untuk jaga-jaga kalau nanti mode non-fullscreen diaktifkan lagi.
+// Body pemanggil tetap mengurus scroll-nya sendiri lewat elemen
+// `flex-1 overflow-y-auto` di dalam.
+function ModalShell({ onClose, children }) {
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-black/40" onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex h-full w-full flex-1 flex-col overflow-hidden bg-white"
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── Toggle Metode Potongan (Gaji / Tukin) ─────────────────────
+function MetodeToggle({ value, onChange, disabled }) {
+  return (
+    <div
+      className={`inline-flex overflow-hidden rounded border text-[10px] ${disabled ? "opacity-40" : ""}`}
+      title="Sumber potongan: Gaji atau Tunjangan Kinerja (Tukin)"
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => onChange("gaji")}
+        className={`px-1.5 py-0.5 ${
+          value === "gaji" ? "bg-blue-600 text-white" : "bg-white text-gray-500 hover:bg-gray-50"
+        }`}
+      >
+        G
+      </button>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => onChange("tukin")}
+        className={`border-l px-1.5 py-0.5 ${
+          value === "tukin" ? "bg-purple-600 text-white" : "bg-white text-gray-500 hover:bg-gray-50"
+        }`}
+      >
+        T
+      </button>
+    </div>
+  );
+}
+
+// ─── Autocomplete Instansi (untuk panel Filter) ────────────────
+function InstansiAutocomplete({ value, onChange, options, placeholder = "Cari instansi…" }) {
+  const [query, setQuery] = useState(value || "");
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    setQuery(value || "");
+  }, [value]);
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const filtered = query
+    ? options.filter((o) => o.toLowerCase().includes(query.toLowerCase()))
+    : options;
+
+  const handlePick = (opt) => {
+    onChange(opt);
+    setQuery(opt);
+    setOpen(false);
+  };
+
+  const handleClear = () => {
+    onChange("");
+    setQuery("");
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative" ref={wrapRef}>
+      <div className="relative">
+        <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            onChange(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder={placeholder}
+          className="w-full rounded-lg border py-2 pl-8 pr-7 text-sm focus:ring-2 focus:ring-blue-500"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={handleClear}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+          >
+            <XCircle size={14} />
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border bg-white shadow-lg">
+          <button
+            type="button"
+            onClick={handleClear}
+            className="flex w-full items-center border-b px-3 py-2 text-left text-sm text-gray-500 hover:bg-gray-50"
+          >
+            Semua Instansi
+          </button>
+          {filtered.length === 0 ? (
+            <p className="px-3 py-2 text-sm text-gray-400">Instansi tidak ditemukan.</p>
+          ) : (
+            filtered.map((opt) => (
+              <button
+                type="button"
+                key={opt}
+                onClick={() => handlePick(opt)}
+                className="flex w-full items-center px-3 py-2 text-left text-sm hover:bg-gray-50"
+              >
+                {opt}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

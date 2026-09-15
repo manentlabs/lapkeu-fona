@@ -35,7 +35,19 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       const user = await login(username.trim(), password);
-      navigate(location.state?.from?.pathname || dashboardPathForRole(user.role), { replace: true });
+
+      // Path dashboard yang benar untuk role user yang BARU login
+      const targetPath = dashboardPathForRole(user.role);
+      const fromPath = location.state?.from?.pathname;
+
+      // "from" hanya valid dipakai kalau memang berada di area dashboard
+      // milik role user ini. Kalau berasal dari sesi akun lain (role beda),
+      // abaikan dan pakai targetPath supaya tidak nyasar ke halaman
+      // yang ProtectedRoute-nya akan menolak (lalu balik ke /login lagi).
+      const destination =
+        fromPath && fromPath.startsWith(targetPath) ? fromPath : targetPath;
+
+      navigate(destination, { replace: true });
     } catch (err) {
       const status = err.response?.status;
       if (status === 401 || status === 422) setError("Username atau kata sandi salah.");

@@ -377,7 +377,7 @@ class PinjamanController {
   // ─────────────────────────────────────────────────────────────
   // 4. ANGGOTA MENGAJUKAN PINJAMAN BARU
   // ─────────────────────────────────────────────────────────────
-  async store(req, res) {
+    async store(req, res) {
     try {
       const userId = req.userId;
       const user = await User.findByPk(userId, {
@@ -402,8 +402,9 @@ class PinjamanController {
         utang_brg_pokok,
         utang_brg_jasa,
         waserba,
-        utang_uang_menengah_pokok,
-        utang_uang_menengah_jasa,
+        // utang_uang_menengah_pokok & utang_uang_menengah_jasa TIDAK lagi
+        // diambil dari body — dihitung otomatis di bawah supaya konsisten
+        // dan tidak bisa dititipkan nilai sembarangan dari client.
         utang_uang_pendek_pokok,
         utang_uang_pendek_jasa,
         simpanan_pokok,
@@ -425,7 +426,25 @@ class PinjamanController {
         });
       }
 
-      const sisa_angsuran = parseInt(jangka_waktu);
+      const plafonNum = parseFloat(plafon) || 0;
+      const jangkaWaktuNum = parseInt(jangka_waktu) || 0;
+
+      if (jangkaWaktuNum <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Jangka waktu harus lebih dari 0'
+        });
+      }
+
+      const sisa_angsuran = jangkaWaktuNum;
+
+      // ─────────────────────────────────────────────────────────
+      // Utang Uang Menengah — dihitung otomatis, bukan input manual:
+      //   Pokok = plafon / jangka_waktu   (cicilan pokok per bulan)
+      //   Jasa  = 2,75% x plafon          (bunga pinjaman per bulan)
+      // ─────────────────────────────────────────────────────────
+      const utang_uang_menengah_pokok = plafonNum / jangkaWaktuNum;
+      const utang_uang_menengah_jasa = plafonNum * 0.0275;
 
       const pinjaman = await Pinjaman.create({
         anggota_id: anggotaId,
@@ -439,8 +458,8 @@ class PinjamanController {
         utang_brg_pokok: utang_brg_pokok || 0,
         utang_brg_jasa: utang_brg_jasa || 0,
         waserba: waserba || 0,
-        utang_uang_menengah_pokok: utang_uang_menengah_pokok || 0,
-        utang_uang_menengah_jasa: utang_uang_menengah_jasa || 0,
+        utang_uang_menengah_pokok,
+        utang_uang_menengah_jasa,
         utang_uang_pendek_pokok: utang_uang_pendek_pokok || 0,
         utang_uang_pendek_jasa: utang_uang_pendek_jasa || 0,
         simpanan_pokok: simpanan_pokok || 0,

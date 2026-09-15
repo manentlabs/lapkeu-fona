@@ -27,7 +27,7 @@ export const ROLES = {
         icon: "HandCoins",
         children: [
           { label: "Verifikasi Pinjaman", path: "/dashboard/bendahara/verifikasi", icon: "ClipboardCheck" },        
-          { label: "Potongan Gaji", path: "/dashboard/bendahara/potongan-gaji", icon: "Wallet" },
+          { label: "Pengajuan Potongan", path: "/dashboard/bendahara/potongan-gaji", icon: "Wallet" },
           ],
       },
       

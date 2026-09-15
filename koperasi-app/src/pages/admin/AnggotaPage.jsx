@@ -49,6 +49,43 @@ const emptyFilters = {
   instansi: "", // ← TAMBAHAN INSTANSI
 };
 
+// Menghasilkan daftar nomor halaman dengan elipsis, mis: [1, "...", 4, 5, 6, "...", 20]
+function getPageNumbers(current, total, siblingCount = 1) {
+  const totalNumbers = siblingCount * 2 + 5; // first, last, current, 2 dots, siblings
+  if (total <= totalNumbers) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+
+  const leftSibling = Math.max(current - siblingCount, 1);
+  const rightSibling = Math.min(current + siblingCount, total);
+
+  const showLeftDots = leftSibling > 2;
+  const showRightDots = rightSibling < total - 1;
+
+  const pages = [];
+
+  if (!showLeftDots && showRightDots) {
+    const leftRange = Array.from({ length: 3 + siblingCount * 2 }, (_, i) => i + 1);
+    pages.push(...leftRange, "...", total);
+  } else if (showLeftDots && !showRightDots) {
+    const rightRange = Array.from(
+      { length: 3 + siblingCount * 2 },
+      (_, i) => total - (3 + siblingCount * 2) + i + 1
+    );
+    pages.push(1, "...", ...rightRange);
+  } else if (showLeftDots && showRightDots) {
+    const middleRange = Array.from(
+      { length: rightSibling - leftSibling + 1 },
+      (_, i) => leftSibling + i
+    );
+    pages.push(1, "...", ...middleRange, "...", total);
+  } else {
+    pages.push(...Array.from({ length: total }, (_, i) => i + 1));
+  }
+
+  return pages;
+}
+
 export default function AnggotaPage() {
   const [summary, setSummary] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -569,17 +606,26 @@ export default function AnggotaPage() {
                 Sebelumnya
               </button>
               <div className="flex flex-wrap gap-1.5">
-                {Array.from({ length: pagination.total_pages }, (_, i) => i + 1).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => goToPage(p)}
-                    className={`h-8 w-8 rounded-lg text-sm ${
-                      p === pagination.page ? "bg-blue-600 text-white" : "border bg-white text-gray-600"
-                    }`}
-                  >
-                    {p}
-                  </button>
-                ))}
+                {getPageNumbers(pagination.page, pagination.total_pages).map((p, idx) =>
+                  p === "..." ? (
+                    <span
+                      key={`dots-${idx}`}
+                      className="flex h-8 w-8 items-center justify-center text-sm text-gray-400"
+                    >
+                      …
+                    </span>
+                  ) : (
+                    <button
+                      key={p}
+                      onClick={() => goToPage(p)}
+                      className={`h-8 w-8 rounded-lg text-sm ${
+                        p === pagination.page ? "bg-blue-600 text-white" : "border bg-white text-gray-600"
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  )
+                )}
               </div>
               <button
                 onClick={() => goToPage(pagination.page + 1)}
