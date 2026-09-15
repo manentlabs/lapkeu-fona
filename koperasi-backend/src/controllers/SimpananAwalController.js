@@ -1,50 +1,4 @@
 // controllers/SimpananAwalController.js
-//
-// ============================================================
-// TAHAP 1 — INTEGRITAS MASTER & SALDO ANGGOTA
-// ============================================================
-// Scope controller ini SENGAJA dibatasi hanya pada:
-//   ✓ Anggota valid (dicari via no_anggota)
-//   ✓ Jenis simpanan aktif (dicari via kode)
-//   ✓ Nominal > 0
-//   ✓ Tanggal valid
-//   ✓ Kombinasi anggota + jenis unik (dicek di level aplikasi,
-//     BUKAN mengandalkan UNIQUE index di MySQL — lihat catatan
-//     di bagian cekKombinasiUnik())
-//   ✓ jenis_simpanan_id & anggota_id tidak boleh diubah setelah
-//     dibuat (LOCK, sama seperti kode/akun_id di JenisSimpanan)
-//   ✓ Soft delete (paranoid)
-//   ✓ Import menggunakan KODE jenis simpanan & NO_ANGGOTA
-//
-// KONSISTENSI INPUT:
-//   Semua endpoint tulis (store & import) menerima BUSINESS KEY:
-//     - no_anggota  (bukan anggota_id)
-//     - kode_jenis  (bukan jenis_simpanan_id)
-//   Frontend tidak perlu tahu id internal DB.
-//
-// Belum termasuk di sini (Tahap 2): keterhubungan ke Saldo
-// Anggota, Jurnal Pembukaan, Buku Besar, Neraca. Controller ini
-// tidak melakukan efek samping ke luar tabel simpanan_awal.
-//
-// ------------------------------------------------------------
-// CATATAN PERBAIKAN PAGINATION (index):
-//   Frontend menampilkan data dalam bentuk TABEL PIVOT per
-//   anggota (satu baris = satu anggota, kolom = tiap jenis
-//   simpanan). Kalau pagination dihitung dari baris mentah
-//   simpanan_awal (satu anggota bisa py banyak baris — satu per
-//   jenis simpanan), maka satu halaman bisa berisi anggota yang
-//   "terpotong" jenis simpanannya, dan jumlah anggota per
-//   halaman jadi tidak konsisten (mis. tampak cuma ~5 dari 10).
-//
-//   Perbaikan: index() sekarang memaginasi berdasarkan ANGGOTA
-//   (bukan baris), lalu untuk anggota-anggota pada halaman
-//   tersebut, SEMUA baris simpanan_awal miliknya (semua jenis)
-//   diikutkan tanpa terpotong. Ringkasan (summary) juga dihitung
-//   dari SELURUH data yang lolos filter, bukan cuma baris pada
-//   halaman aktif, supaya kartu ringkasan tetap akurat di
-//   halaman berapa pun.
-// ============================================================
-
 const { Op } = require('sequelize');
 const XLSX = require('xlsx');
 
@@ -292,7 +246,7 @@ exports.index = async (req, res) => {
     const anggotaList = await Anggota.findAll({
       where: { id: anggotaIdsWithData },
       attributes: ['id', 'no_anggota', 'nama'],
-      order: [['no_anggota', 'ASC']],
+      order: [['id', 'ASC']],
     });
 
     const totalAnggota = anggotaList.length;
