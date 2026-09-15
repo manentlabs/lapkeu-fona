@@ -4,8 +4,8 @@
 // TAHAP 1 — INTEGRITAS MASTER & SALDO ANGGOTA
 // ============================================================
 // Scope controller ini SENGAJA dibatasi hanya pada:
-//   ✓ Anggota valid
-//   ✓ Jenis simpanan aktif
+//   ✓ Anggota valid (dicari via no_anggota)
+//   ✓ Jenis simpanan aktif (dicari via kode)
 //   ✓ Nominal > 0
 //   ✓ Tanggal valid
 //   ✓ Kombinasi anggota + jenis unik (dicek di level aplikasi,
@@ -14,7 +14,13 @@
 //   ✓ jenis_simpanan_id & anggota_id tidak boleh diubah setelah
 //     dibuat (LOCK, sama seperti kode/akun_id di JenisSimpanan)
 //   ✓ Soft delete (paranoid)
-//   ✓ Import menggunakan KODE jenis simpanan, bukan id
+//   ✓ Import menggunakan KODE jenis simpanan & NO_ANGGOTA
+//
+// KONSISTENSI INPUT:
+//   Semua endpoint tulis (store & import) menerima BUSINESS KEY:
+//     - no_anggota  (bukan anggota_id)
+//     - kode_jenis  (bukan jenis_simpanan_id)
+//   Frontend tidak perlu tahu id internal DB.
 //
 // Belum termasuk di sini (Tahap 2): keterhubungan ke Saldo
 // Anggota, Jurnal Pembukaan, Buku Besar, Neraca. Controller ini
@@ -83,18 +89,25 @@ const jenisInclude = {
 // ============================================================
 
 /**
- * Pastikan anggota ada. Sesuaikan field status jika model Anggota
- * Anda punya kolom status keanggotaan (mis. 'aktif' / 'nonaktif').
+ * Cari anggota berdasarkan NO_ANGGOTA (business key).
+ * Sesuaikan field status jika model Anggota Anda punya kolom
+ * status keanggotaan (mis. 'aktif' / 'nonaktif').
  */
-async function validasiAnggota(anggotaId) {
-  if (!anggotaId) {
-    return { error: 'Anggota wajib diisi.' };
+async function validasiAnggota(noAnggota) {
+  const normalized = normalizeNoAnggota(noAnggota);
+
+  if (!normalized) {
+    return { error: 'No. anggota wajib diisi.' };
   }
 
-  const anggota = await Anggota.findByPk(anggotaId);
+  const anggota = await Anggota.findOne({
+    where: { no_anggota: normalized },
+  });
 
   if (!anggota) {
-    return { error: 'Anggota tidak ditemukan.' };
+    return {
+      error: `Anggota dengan no_anggota "${normalized}" tidak ditemukan.`,
+    };
   }
 
   // Jika model Anggota memiliki kolom status, aktifkan pengecekan ini:
@@ -105,20 +118,27 @@ async function validasiAnggota(anggotaId) {
   return { anggota };
 }
 
-async function validasiJenisAktif(jenisSimpananId) {
-  if (!jenisSimpananId) {
-    return { error: 'Jenis simpanan wajib diisi.' };
+/**
+ * Cari jenis simpanan aktif berdasarkan KODE (business key).
+ */
+async function validasiJenisAktif(kodeJenis) {
+  const normalized = normalizeKodeJenis(kodeJenis);
+
+  if (!normalized) {
+    return { error: 'Kode jenis simpanan wajib diisi.' };
   }
 
   const jenis = await JenisSimpanan.findOne({
     where: {
-      id: jenisSimpananId,
+      kode: normalized,
       is_active: true,
     },
   });
 
   if (!jenis) {
-    return { error: 'Jenis simpanan tidak ditemukan atau sudah tidak aktif.' };
+    return {
+      error: `Jenis simpanan dengan kode "${normalized}" tidak ditemukan atau sudah tidak aktif.`,
+    };
   }
 
   return { jenis };
@@ -217,6 +237,8 @@ exports.index = async (req, res) => {
       no_anggota: row.anggota?.no_anggota,
       nama_anggota: row.anggota?.nama,
       jenis_simpanan_id: row.jenis_simpanan_id,
+      kode_jenis: row.jenis_simpanan?.kode,
+      nama_jenis: row.jenis_simpanan?.nama,
       tanggal: row.tanggal,
       jumlah: row.jumlah,
     }));
@@ -274,6 +296,7 @@ exports.show = async (req, res) => {
 // GET /api/simpanan-awal/anggota/:id
 //
 // Dipakai modal detail: seluruh saldo awal milik satu anggota.
+// :id di sini adalah anggota_id (untuk navigasi/detail, bukan input tulis).
 // ============================================================
 
 exports.byAnggota = async (req, res) => {
@@ -309,36 +332,48 @@ exports.byAnggota = async (req, res) => {
 
 // ============================================================
 // POST /api/simpanan-awal
+//
+// INPUT (body):
+//   no_anggota   -> business key anggota
+//   kode_jenis   -> business key jenis simpanan (mis. "SP")
+//   tanggal      -> tanggal saldo awal
+//   jumlah       -> nominal > 0
+//
+// Frontend TIDAK perlu mengirim anggota_id / jenis_simpanan_id.
 // ============================================================
 
 exports.store = async (req, res) => {
   try {
     const {
-      anggota_id,
-      jenis_simpanan_id,
+      no_anggota,
+      kode_jenis,
       tanggal,
       jumlah,
     } = req.body;
 
     // --------------------------------------------------------
-    // 1. Anggota valid
+    // 1. Anggota valid (by no_anggota)
     // --------------------------------------------------------
 
-    const anggotaCheck = await validasiAnggota(anggota_id);
+    const anggotaCheck = await validasiAnggota(no_anggota);
 
     if (anggotaCheck.error) {
       return res.status(422).json({ message: anggotaCheck.error });
     }
 
+    const anggota = anggotaCheck.anggota;
+
     // --------------------------------------------------------
-    // 2. Jenis simpanan aktif
+    // 2. Jenis simpanan aktif (by kode)
     // --------------------------------------------------------
 
-    const jenisCheck = await validasiJenisAktif(jenis_simpanan_id);
+    const jenisCheck = await validasiJenisAktif(kode_jenis);
 
     if (jenisCheck.error) {
       return res.status(422).json({ message: jenisCheck.error });
     }
+
+    const jenis = jenisCheck.jenis;
 
     // --------------------------------------------------------
     // 3. Nominal > 0
@@ -366,21 +401,21 @@ exports.store = async (req, res) => {
     // 5. Kombinasi anggota + jenis harus unik
     // --------------------------------------------------------
 
-    const duplikat = await cekKombinasiUnik(anggota_id, jenis_simpanan_id);
+    const duplikat = await cekKombinasiUnik(anggota.id, jenis.id);
 
     if (duplikat) {
       return res.status(422).json({
-        message: `Saldo awal untuk anggota "${anggotaCheck.anggota.nama}" pada jenis simpanan "${jenisCheck.jenis.nama}" sudah ada.`,
+        message: `Saldo awal untuk anggota "${anggota.nama}" pada jenis simpanan "${jenis.nama}" sudah ada.`,
       });
     }
 
     // --------------------------------------------------------
-    // 6. Simpan
+    // 6. Simpan — di sini baru pakai id hasil lookup
     // --------------------------------------------------------
 
     const created = await SimpananAwal.create({
-      anggota_id,
-      jenis_simpanan_id,
+      anggota_id: anggota.id,
+      jenis_simpanan_id: jenis.id,
       tanggal,
       jumlah: parsedJumlah,
     });
@@ -407,8 +442,8 @@ exports.store = async (req, res) => {
 // PUT /api/simpanan-awal/:id
 //
 // ATURAN FIELD:
-//   anggota_id         -> LOCK
-//   jenis_simpanan_id   -> LOCK
+//   anggota_id         -> LOCK (tidak bisa diubah)
+//   jenis_simpanan_id   -> LOCK (tidak bisa diubah)
 //   tanggal             -> EDITABLE
 //   jumlah              -> EDITABLE
 //
