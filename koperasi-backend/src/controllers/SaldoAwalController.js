@@ -107,11 +107,6 @@ exports.index = async (req, res) => {
     const totalKeseluruhan =
       totalAset + totalBeban - totalKewajiban - totalModal - totalPendapatan;
 
-    const totalPajak = leafAkuns.reduce(
-      (s, a) => s + (parseFloat(a.pajak) || 0),
-      0
-    );
-
     const totalAkunBerSaldo = leafAkuns.filter(
       (a) => (parseFloat(a.saldo_awal) || 0) !== 0
     ).length;
@@ -130,7 +125,6 @@ exports.index = async (req, res) => {
       totalModal,
       totalPendapatan,
       totalKeseluruhan,
-      totalPajak,
       totalAkunBerSaldo,
       pagination: {
         page: parseInt(page),
@@ -163,10 +157,9 @@ exports.update = async (req, res) => {
     const akun = await Akun.findByPk(req.params.id);
     if (!akun) return res.status(404).json({ message: "Akun tidak ditemukan." });
 
-    const { saldo_awal, pajak } = req.body;
+    const { saldo_awal } = req.body;
     await akun.update({
       saldo_awal: saldo_awal !== undefined ? saldo_awal : akun.saldo_awal,
-      pajak: pajak !== undefined ? pajak : akun.pajak,
     });
 
     return res.json({ message: "Saldo awal berhasil diperbarui.", data: akun });
@@ -182,7 +175,7 @@ exports.destroy = async (req, res) => {
     const akun = await Akun.findByPk(req.params.id);
     if (!akun) return res.status(404).json({ message: "Akun tidak ditemukan." });
 
-    await akun.update({ saldo_awal: 0, pajak: 0 });
+    await akun.update({ saldo_awal: 0 });
     return res.json({ message: "Saldo awal berhasil direset ke 0." });
   } catch (error) {
     console.error(error);
@@ -348,8 +341,8 @@ exports.exportPdf = async (req, res) => {
 
     // ─── TABEL ──────────────────────────────────────────────────
     let tableTopY = doc.y + 12;
-    const colWidths = [30, 65, 175, 70, 100, 70];
-    const headers = ["No", "Kode", "Nama Akun", "Tipe", "Saldo Awal (Rp)", "Pajak"];
+    const colWidths = [30, 65, 235, 80, 100];
+    const headers = ["No", "Kode", "Nama Akun", "Tipe", "Saldo Awal (Rp)"];
 
     // Fungsi untuk menggambar header di posisi y tertentu
     function drawHeader(y) {
@@ -362,7 +355,7 @@ exports.exportPdf = async (req, res) => {
 
       let x = startX;
       headers.forEach((h, i) => {
-        const align = i === 4 || i === 5 ? "right" : (i === 0 ? "center" : "left");
+        const align = i === 4 ? "right" : (i === 0 ? "center" : "left");
         doc.text(h, x + 4, y + 4, {
           width: colWidths[i] - 8,
           align: align,
@@ -378,10 +371,10 @@ exports.exportPdf = async (req, res) => {
         .font("Helvetica-Bold")
         .fontSize(7);
 
-      const colNumbers = ["1", "2", "3", "4", "5", "6"];
+      const colNumbers = ["1", "2", "3", "4", "5"];
       x = startX;
       colNumbers.forEach((num, i) => {
-        const align = i === 4 || i === 5 ? "right" : (i === 0 ? "center" : "left");
+        const align = i === 4 ? "right" : (i === 0 ? "center" : "left");
         doc.text(num, x + 4, y2 + 4, {
           width: colWidths[i] - 8,
           align: align,
@@ -406,7 +399,6 @@ exports.exportPdf = async (req, res) => {
       rowCount++;
       const saldo = parseFloat(akun.saldo_awal) || 0;
       const isNegatif = saldo < 0;
-      const pajak = parseFloat(akun.pajak) || 0;
 
       // Jika halaman penuh, buat halaman baru
       if (rowY + 18 > 760) {
@@ -425,12 +417,11 @@ exports.exportPdf = async (req, res) => {
         akun.nama_akun,
         (akun.tipe_akun || "").toUpperCase(),
         fmtAkuntansi(saldo),
-        pajak > 0 ? pajak.toLocaleString("id-ID") + "%" : "0%",
       ];
 
       let x = startX;
       rowData.forEach((text, i) => {
-        const align = i === 4 || i === 5 ? "right" : (i === 0 ? "center" : "left");
+        const align = i === 4 ? "right" : (i === 0 ? "center" : "left");
         const color = i === 4 && isNegatif ? "#c0392b" : "#000";
         doc.fillColor(color).text(text, x + 4, rowY + 3, {
           width: colWidths[i] - 8,
@@ -456,10 +447,6 @@ exports.exportPdf = async (req, res) => {
         (sum, a) => sum + (parseFloat(a.saldo_awal) || 0),
         0
       );
-      const totalPajakAll = leafAkuns.reduce(
-        (sum, a) => sum + (parseFloat(a.pajak) || 0),
-        0
-      );
       const isTotalNegatif = totalSaldoAwal < 0;
 
       doc.rect(startX, rowY, 510, 20)
@@ -471,7 +458,6 @@ exports.exportPdf = async (req, res) => {
         "TOTAL",
         "",
         fmtAkuntansi(totalSaldoAwal),
-        totalPajakAll.toLocaleString("id-ID") + "%",
       ];
 
       doc.fillColor(isTotalNegatif ? "#c0392b" : "#000")
@@ -480,7 +466,7 @@ exports.exportPdf = async (req, res) => {
 
       let x = startX;
       totalTexts.forEach((text, i) => {
-        const align = i === 4 || i === 5 ? "right" : (i === 0 ? "center" : "left");
+        const align = i === 4 ? "right" : (i === 0 ? "center" : "left");
         doc.text(text, x + 4, rowY + 4, {
           width: colWidths[i] - 8,
           align: align,

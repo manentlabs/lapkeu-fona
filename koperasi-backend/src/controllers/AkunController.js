@@ -83,7 +83,7 @@ exports.show = async (req, res) => {
 // Store
 exports.store = async (req, res) => {
   try {
-    const { kode_akun, nama_akun, tipe_akun, parent_id, is_active, saldo_awal, pajak } = req.body;
+    const { kode_akun, nama_akun, tipe_akun, parent_id, is_active, saldo_awal } = req.body;
     if (!kode_akun || !nama_akun || !tipe_akun) {
       return res.status(422).json({ message: "Kode, nama, dan tipe akun wajib diisi." });
     }
@@ -97,7 +97,6 @@ exports.store = async (req, res) => {
       parent_id: parent_id || null,
       is_active: is_active !== undefined ? is_active : 1,
       saldo_awal: saldo_awal || 0,
-      pajak: pajak || null,
     });
     return res.status(201).json({ message: "Akun berhasil ditambahkan.", data: akun });
   } catch (error) {
@@ -112,7 +111,7 @@ exports.update = async (req, res) => {
     const akun = await Akun.findByPk(req.params.id);
     if (!akun) return res.status(404).json({ message: "Akun tidak ditemukan." });
 
-    const { kode_akun, nama_akun, tipe_akun, parent_id, is_active, saldo_awal, pajak } = req.body;
+    const { kode_akun, nama_akun, tipe_akun, parent_id, is_active, saldo_awal } = req.body;
     if (kode_akun && kode_akun !== akun.kode_akun) {
       const existing = await Akun.findOne({ where: { kode_akun } });
       if (existing) return res.status(422).json({ message: "Kode akun sudah digunakan." });
@@ -125,7 +124,6 @@ exports.update = async (req, res) => {
       parent_id: parent_id !== undefined ? parent_id : akun.parent_id,
       is_active: is_active !== undefined ? is_active : akun.is_active,
       saldo_awal: saldo_awal !== undefined ? saldo_awal : akun.saldo_awal,
-      pajak: pajak !== undefined ? pajak : akun.pajak,
     });
     return res.json({ message: "Akun berhasil diperbarui.", data: akun });
   } catch (error) {
