@@ -269,8 +269,7 @@ exports.index = async (req, res) => {
           where: { anggota_id: pagedAnggotaIds },
           include: [anggotaInclude, jenisInclude],
           order: [
-            ['id', 'ASC'],
-            ['tanggal', 'ASC'],
+            ['id', 'ASC']
           ],
         })
       : [];
