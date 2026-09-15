@@ -1,5 +1,5 @@
 // controllers/SimpananAwalController.js
-const { Op } = require('sequelize');
+const { Op, fn, col } = require('sequelize');
 const XLSX = require('xlsx');
 
 const SimpananAwal = require('../models/SimpananAwal');
@@ -60,11 +60,6 @@ const jenisInclude = {
 // VALIDATOR BERSAMA (dipakai store, update, import)
 // ============================================================
 
-/**
- * Cari anggota berdasarkan NO_ANGGOTA (business key).
- * Sesuaikan field status jika model Anggota Anda punya kolom
- * status keanggotaan (mis. 'aktif' / 'nonaktif').
- */
 async function validasiAnggota(noAnggota) {
   const normalized = normalizeNoAnggota(noAnggota);
 
@@ -82,17 +77,9 @@ async function validasiAnggota(noAnggota) {
     };
   }
 
-  // Jika model Anggota memiliki kolom status, aktifkan pengecekan ini:
-  // if (anggota.status && anggota.status !== 'aktif') {
-  //   return { error: `Anggota "${anggota.nama}" tidak aktif.` };
-  // }
-
   return { anggota };
 }
 
-/**
- * Cari jenis simpanan aktif berdasarkan KODE (business key).
- */
 async function validasiJenisAktif(kodeJenis) {
   const normalized = normalizeKodeJenis(kodeJenis);
 
@@ -116,25 +103,6 @@ async function validasiJenisAktif(kodeJenis) {
   return { jenis };
 }
 
-/**
- * Cek kombinasi anggota + jenis simpanan belum pernah ada.
- *
- * PENTING: kita TIDAK mengandalkan UNIQUE(anggota_id, jenis_simpanan_id,
- * deleted_at) di MySQL, karena MySQL memperlakukan setiap NULL sebagai
- * nilai berbeda pada index unik — artinya banyak baris dengan
- * deleted_at NULL (belum dihapus) tetap bisa lolos sebagai "unik".
- * Jadi validasi keunikan dilakukan di sini, terhadap baris yang masih
- * hidup saja. Sequelize paranoid otomatis menambahkan
- * `WHERE deleted_at IS NULL` pada findOne/findAll, jadi baris yang
- * sudah di-soft-delete tidak akan ikut dicek.
- *
- * Catatan race condition: dua request bersamaan tetap bisa lolos
- * validasi ini sebelum salah satunya sempat INSERT. Untuk keamanan
- * penuh, tetap disarankan menjaga UNIQUE index di database sebagai
- * jaring pengaman terakhir (walau tidak sempurna untuk soft delete),
- * atau membungkus create dalam transaction + row lock jika volume
- * input serentak tinggi.
- */
 async function cekKombinasiUnik(anggotaId, jenisSimpananId, excludeId = null) {
   const where = {
     anggota_id: anggotaId,
@@ -152,21 +120,6 @@ async function cekKombinasiUnik(anggotaId, jenisSimpananId, excludeId = null) {
 
 // ============================================================
 // GET /api/simpanan-awal
-//
-// Pagination berbasis ANGGOTA (lihat catatan di kepala file).
-// Alur:
-//   1. Cari semua anggota_id yang punya >=1 baris simpanan_awal,
-//      dibatasi filter nama_anggota/no_anggota bila ada.
-//   2. Ambil data anggota tsb (id, no_anggota, nama), urutkan
-//      berdasarkan no_anggota, lalu potong sesuai page/per_page
-//      -> INI yang menentukan jumlah "baris pivot" per halaman.
-//   3. Ambil SEMUA baris simpanan_awal (semua jenis) milik
-//      anggota-anggota pada halaman tsb -> tidak ada jenis yang
-//      terpotong.
-//   4. Hitung summary (perJenis, totalSemua, jumlahAnggota) dari
-//      SELURUH anggota yang lolos filter (bukan cuma halaman
-//      aktif), supaya kartu ringkasan selalu menampilkan total
-//      keseluruhan yang konsisten di halaman berapa pun.
 // ============================================================
 
 exports.index = async (req, res) => {
@@ -200,8 +153,7 @@ exports.index = async (req, res) => {
     });
 
     // --------------------------------------------------------
-    // 1. Anggota_id unik yang punya data simpanan_awal,
-    //    sesuai filter nama_anggota/no_anggota.
+    // 1. Anggota_id unik yang punya data simpanan_awal
     // --------------------------------------------------------
 
     const idRows = await SimpananAwal.findAll({
@@ -239,15 +191,36 @@ exports.index = async (req, res) => {
     }
 
     // --------------------------------------------------------
-    // 2. Daftar anggota (terurut), lalu potong per halaman.
-    //    Inilah unit pagination yang sebenarnya.
+    // 2. Daftar anggota (terurut berdasarkan id simpanan_awal
+    //    terkecil), lalu potong per halaman.
+    //
+    //    Tujuannya: urutan baris pivot mengikuti urutan baris
+    //    pada tabel `simpanan_awal`, bukan urutan id anggota.
     // --------------------------------------------------------
+
+    const minIdRows = await SimpananAwal.findAll({
+      where: { anggota_id: anggotaIdsWithData },
+      attributes: [
+        'anggota_id',
+        [fn('MIN', col('id')), 'min_id'],
+      ],
+      group: ['anggota_id'],
+      raw: true,
+    });
+
+    const minIdByAnggota = new Map(
+      minIdRows.map((r) => [r.anggota_id, Number(r.min_id) || 0])
+    );
 
     const anggotaList = await Anggota.findAll({
       where: { id: anggotaIdsWithData },
       attributes: ['id', 'no_anggota', 'nama'],
-      order: [['id', 'ASC']],
     });
+
+    anggotaList.sort(
+      (a, b) =>
+        (minIdByAnggota.get(a.id) || 0) - (minIdByAnggota.get(b.id) || 0)
+    );
 
     const totalAnggota = anggotaList.length;
     const totalPages = Math.max(1, Math.ceil(totalAnggota / limit));
@@ -260,17 +233,14 @@ exports.index = async (req, res) => {
 
     // --------------------------------------------------------
     // 3. Semua baris simpanan_awal (semua jenis) milik anggota
-    //    pada halaman ini — tidak dibatasi limit lagi di sini,
-    //    supaya pivot per anggota tidak terpotong jenisnya.
+    //    pada halaman ini — urut berdasarkan id simpanan_awal.
     // --------------------------------------------------------
 
     const rows = pagedAnggotaIds.length
       ? await SimpananAwal.findAll({
           where: { anggota_id: pagedAnggotaIds },
           include: [anggotaInclude, jenisInclude],
-          order: [
-            ['id', 'ASC']
-          ],
+          order: [['id', 'ASC']],
         })
       : [];
 
@@ -287,8 +257,7 @@ exports.index = async (req, res) => {
     }));
 
     // --------------------------------------------------------
-    // 4. Summary dari SELURUH anggota yang lolos filter, bukan
-    //    cuma yang tampil di halaman aktif.
+    // 4. Summary dari SELURUH anggota yang lolos filter
     // --------------------------------------------------------
 
     const summaryRows = await SimpananAwal.findAll({
@@ -302,7 +271,8 @@ exports.index = async (req, res) => {
 
     summaryRows.forEach((r) => {
       const val = parseFloat(r.jumlah) || 0;
-      perJenis[r.jenis_simpanan_id] = (perJenis[r.jenis_simpanan_id] || 0) + val;
+      perJenis[r.jenis_simpanan_id] =
+        (perJenis[r.jenis_simpanan_id] || 0) + val;
       totalSemua += val;
     });
 
@@ -362,9 +332,6 @@ exports.show = async (req, res) => {
 
 // ============================================================
 // GET /api/simpanan-awal/anggota/:id
-//
-// Dipakai modal detail: seluruh saldo awal milik satu anggota.
-// :id di sini adalah anggota_id (untuk navigasi/detail, bukan input tulis).
 // ============================================================
 
 exports.byAnggota = async (req, res) => {
@@ -400,14 +367,6 @@ exports.byAnggota = async (req, res) => {
 
 // ============================================================
 // POST /api/simpanan-awal
-//
-// INPUT (body):
-//   no_anggota   -> business key anggota
-//   kode_jenis   -> business key jenis simpanan (mis. "SP")
-//   tanggal      -> tanggal saldo awal
-//   jumlah       -> nominal > 0
-//
-// Frontend TIDAK perlu mengirim anggota_id / jenis_simpanan_id.
 // ============================================================
 
 exports.store = async (req, res) => {
@@ -419,10 +378,6 @@ exports.store = async (req, res) => {
       jumlah,
     } = req.body;
 
-    // --------------------------------------------------------
-    // 1. Anggota valid (by no_anggota)
-    // --------------------------------------------------------
-
     const anggotaCheck = await validasiAnggota(no_anggota);
 
     if (anggotaCheck.error) {
@@ -430,10 +385,6 @@ exports.store = async (req, res) => {
     }
 
     const anggota = anggotaCheck.anggota;
-
-    // --------------------------------------------------------
-    // 2. Jenis simpanan aktif (by kode)
-    // --------------------------------------------------------
 
     const jenisCheck = await validasiJenisAktif(kode_jenis);
 
@@ -443,10 +394,6 @@ exports.store = async (req, res) => {
 
     const jenis = jenisCheck.jenis;
 
-    // --------------------------------------------------------
-    // 3. Nominal > 0
-    // --------------------------------------------------------
-
     const parsedJumlah = parseJumlah(jumlah);
 
     if (parsedJumlah === null || parsedJumlah <= 0) {
@@ -455,19 +402,11 @@ exports.store = async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // 4. Tanggal valid
-    // --------------------------------------------------------
-
     if (!isValidTanggal(tanggal)) {
       return res.status(422).json({
         message: 'Tanggal tidak valid.',
       });
     }
-
-    // --------------------------------------------------------
-    // 5. Kombinasi anggota + jenis harus unik
-    // --------------------------------------------------------
 
     const duplikat = await cekKombinasiUnik(anggota.id, jenis.id);
 
@@ -476,10 +415,6 @@ exports.store = async (req, res) => {
         message: `Saldo awal untuk anggota "${anggota.nama}" pada jenis simpanan "${jenis.nama}" sudah ada.`,
       });
     }
-
-    // --------------------------------------------------------
-    // 6. Simpan — di sini baru pakai id hasil lookup
-    // --------------------------------------------------------
 
     const created = await SimpananAwal.create({
       anggota_id: anggota.id,
@@ -508,16 +443,6 @@ exports.store = async (req, res) => {
 
 // ============================================================
 // PUT /api/simpanan-awal/:id
-//
-// ATURAN FIELD:
-//   anggota_id         -> LOCK (tidak bisa diubah)
-//   jenis_simpanan_id   -> LOCK (tidak bisa diubah)
-//   tanggal             -> EDITABLE
-//   jumlah              -> EDITABLE
-//
-// anggota_id & jenis_simpanan_id sengaja tidak diambil dari
-// req.body sama sekali — walau dikirim, nilainya diabaikan.
-// Ini konsisten dengan aturan LOCK di JenisSimpananController.
 // ============================================================
 
 exports.update = async (req, res) => {
@@ -539,10 +464,6 @@ exports.update = async (req, res) => {
 
     const updateData = {};
 
-    // --------------------------------------------------------
-    // UPDATE TANGGAL
-    // --------------------------------------------------------
-
     if (tanggal !== undefined) {
       if (!isValidTanggal(tanggal)) {
         return res.status(422).json({
@@ -552,10 +473,6 @@ exports.update = async (req, res) => {
 
       updateData.tanggal = tanggal;
     }
-
-    // --------------------------------------------------------
-    // UPDATE JUMLAH
-    // --------------------------------------------------------
 
     if (jumlah !== undefined) {
       const parsedJumlah = parseJumlah(jumlah);
@@ -568,10 +485,6 @@ exports.update = async (req, res) => {
 
       updateData.jumlah = parsedJumlah;
     }
-
-    // --------------------------------------------------------
-    // SIMPAN
-    // --------------------------------------------------------
 
     await item.update(updateData);
 
@@ -595,10 +508,6 @@ exports.update = async (req, res) => {
 
 // ============================================================
 // DELETE /api/simpanan-awal/:id
-//
-// Soft delete murni (Sequelize paranoid). Pastikan model
-// SimpananAwal didefinisikan dengan:
-//   { paranoid: true, deletedAt: 'deleted_at' }
 // ============================================================
 
 exports.destroy = async (req, res) => {
@@ -613,7 +522,7 @@ exports.destroy = async (req, res) => {
       });
     }
 
-    await item.destroy(); // soft delete, mengisi deleted_at
+    await item.destroy();
 
     return res.json({
       message: 'Saldo awal berhasil dihapus.',
@@ -630,14 +539,6 @@ exports.destroy = async (req, res) => {
 
 // ============================================================
 // POST /api/simpanan-awal/import
-//
-// Format kolom wajib: no_anggota, jenis_simpanan, tanggal, jumlah
-// Kolom `jenis_simpanan` diisi KODE jenis simpanan (mis. "SP"),
-// bukan nama dan bukan id — supaya import tidak rapuh terhadap
-// perubahan nama/kolom_key.
-//
-// Membutuhkan middleware upload (mis. multer) yang mengisi
-// req.file.buffer sebelum handler ini dipanggil.
 // ============================================================
 
 exports.import = async (req, res) => {
@@ -658,10 +559,6 @@ exports.import = async (req, res) => {
         message: 'File kosong atau format tidak dikenali.',
       });
     }
-
-    // ------------------------------------------------------
-    // Preload referensi supaya tidak query berulang per baris
-    // ------------------------------------------------------
 
     const semuaAnggota = await Anggota.findAll({
       attributes: ['id', 'no_anggota', 'nama'],
@@ -685,7 +582,7 @@ exports.import = async (req, res) => {
     };
 
     for (let i = 0; i < rows.length; i++) {
-      const rowNumber = i + 2; // +2: baris 1 = header, data mulai baris 2
+      const rowNumber = i + 2;
       const row = rows[i];
 
       const noAnggota = normalizeNoAnggota(row.no_anggota);
@@ -693,7 +590,6 @@ exports.import = async (req, res) => {
       const tanggal = row.tanggal;
       const parsedJumlah = parseJumlah(row.jumlah);
 
-      // ---- Anggota valid ----
       const anggota = anggotaByNoAnggota.get(noAnggota);
 
       if (!noAnggota || !anggota) {
@@ -704,7 +600,6 @@ exports.import = async (req, res) => {
         continue;
       }
 
-      // ---- Jenis simpanan aktif ----
       const jenis = jenisByKode.get(kodeJenis);
 
       if (!kodeJenis || !jenis) {
@@ -715,7 +610,6 @@ exports.import = async (req, res) => {
         continue;
       }
 
-      // ---- Nominal > 0 ----
       if (parsedJumlah === null || parsedJumlah <= 0) {
         results.failed++;
         results.errors.push(
@@ -724,7 +618,6 @@ exports.import = async (req, res) => {
         continue;
       }
 
-      // ---- Tanggal valid ----
       if (!isValidTanggal(tanggal)) {
         results.failed++;
         results.errors.push(
@@ -733,7 +626,6 @@ exports.import = async (req, res) => {
         continue;
       }
 
-      // ---- Kombinasi anggota + jenis harus unik ----
       // eslint-disable-next-line no-await-in-loop
       const duplikat = await cekKombinasiUnik(anggota.id, jenis.id);
 
@@ -745,7 +637,6 @@ exports.import = async (req, res) => {
         continue;
       }
 
-      // ---- Simpan ----
       try {
         // eslint-disable-next-line no-await-in-loop
         await SimpananAwal.create({
