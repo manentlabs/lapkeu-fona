@@ -269,7 +269,7 @@ exports.index = async (req, res) => {
           where: { anggota_id: pagedAnggotaIds },
           include: [anggotaInclude, jenisInclude],
           order: [
-            ['anggota_id', 'ASC'],
+            ['id', 'ASC'],
             ['tanggal', 'ASC'],
           ],
         })
@@ -385,7 +385,7 @@ exports.byAnggota = async (req, res) => {
     const data = await SimpananAwal.findAll({
       where: { anggota_id: anggotaId },
       include: [jenisInclude],
-      order: [['tanggal', 'ASC']],
+      order: [['id', 'ASC']],
     });
 
     return res.json({ data });
