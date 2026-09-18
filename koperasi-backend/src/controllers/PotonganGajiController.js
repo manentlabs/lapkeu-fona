@@ -1259,7 +1259,7 @@ exports.exportPdf = async (req, res) => {
       32,  // No Urut
       120, // Nama
       50,  // Plafon
-      22,  // JW
+      26,  // JW
       20,  // Ke
       44,  // Simp. Wajib
       44,  // Simp. Sukarela
@@ -1355,7 +1355,7 @@ exports.exportPdf = async (req, res) => {
 
         x = startX;
         const cellText = (text, i, align = "right") => {
-          doc.text(text, x + 3, y + 5, { width: colWidths[i] - 6, align });
+          doc.text(text, x + 3, y + 5, { width: colWidths[i] - 6, align, lineBreak: false });
           x += colWidths[i];
         };
 
