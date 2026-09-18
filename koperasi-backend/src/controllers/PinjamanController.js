@@ -25,35 +25,48 @@ async function generateNoTransaksiPencairan(t) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Kode akun kas/bank untuk kredit saat pencairan pokok pinjaman.
+// Menggunakan 1210 (Bank bjb Induk - Tanda Mata) karena pencairan
+// pinjaman dilakukan lewat rekening bank ini, bukan kas tunai.
+const KODE_AKUN_KAS = "1210";
+
+// Kode akun pendapatan jasa/bunga pinjaman (sisi kredit saat jasa diakui).
+const KODE_AKUN_PENDAPATAN_JASA = "5110"; // Pendapatan Jasa Pinjaman
+
+// ─────────────────────────────────────────────────────────────
 // Mapping field POKOK pinjaman -> kode akun piutang.
-// Ini adalah uang yang SUNGGUHAN dicairkan/dikeluarkan ke anggota,
-// jadi lawannya adalah Kas Bank (1102).
+// Ini adalah uang/barang yang SUNGGUHAN dicairkan/dikeluarkan ke anggota.
+//
+// - utang_brg_pokok (waserba/barang)      -> 1330 Piutang dagang
+// - utang_uang_menengah_pokok & pendek_pokok -> 1311 Piutang Usaha Anggota
+//   (COA koperasi ini tidak memisahkan piutang berdasarkan tenor pinjaman,
+//   jadi keduanya digabung ke akun piutang anggota yang sama)
 const POKOK_MAP = [
-  ["utang_brg_pokok", "1106", "Piutang Barang Pokok"],
-  ["utang_uang_menengah_pokok", "1103", "Piutang Uang Menengah Pokok"],
-  ["utang_uang_pendek_pokok", "1103", "Piutang Uang Pendek Pokok"],
+  ["utang_brg_pokok", "1330", "Piutang Barang (Waserba)"],
+  ["utang_uang_menengah_pokok", "1311", "Piutang Usaha Anggota - Pokok Menengah"],
+  ["utang_uang_pendek_pokok", "1311", "Piutang Usaha Anggota - Pokok Pendek"],
 ];
 
 // ─────────────────────────────────────────────────────────────
-// Mapping field JASA/BUNGA pinjaman -> kode akun piutang jasa (1104).
+// Mapping field JASA/BUNGA pinjaman -> kode akun piutang.
 //
-// SEMUA field jasa dipetakan ke akun piutang yang sama (1104), sesuai
-// KREDIT_MAP di PotonganGajiController. Lawannya BUKAN Kas — jasa/bunga
-// adalah pendapatan koperasi yang diakui di muka (skema akrual), bukan
-// uang yang dikeluarkan ke anggota. Sesuai komentar di
-// PotonganGajiController.js: "jasa/bunga sudah diakui sebagai piutang
-// (1104) + pendapatan (4110) SAAT PINJAMAN DICAIRKAN."
+// Chart of accounts koperasi ini tidak punya akun "Piutang Jasa" terpisah,
+// jadi piutang jasa/bunga digabung ke akun piutang anggota yang sama
+// (1311), sesuai praktik umum koperasi yang tidak memisahkan piutang
+// pokok dan piutang bunga. Lawannya adalah Pendapatan Jasa Pinjaman
+// (5110) — jasa/bunga diakui sebagai pendapatan di muka SAAT PINJAMAN
+// DICAIRKAN (skema akrual), bukan uang yang dikeluarkan ke anggota.
 const JASA_MAP = [
-  ["utang_brg_jasa", "1104", "Piutang Barang Jasa"],
-  ["utang_uang_menengah_jasa", "1104", "Piutang Uang Menengah Jasa"],
-  ["utang_uang_pendek_jasa", "1104", "Piutang Uang Pendek Jasa"],
+  ["utang_brg_jasa", "1311", "Piutang Usaha Anggota - Jasa Barang"],
+  ["utang_uang_menengah_jasa", "1311", "Piutang Usaha Anggota - Jasa Menengah"],
+  ["utang_uang_pendek_jasa", "1311", "Piutang Usaha Anggota - Jasa Pendek"],
 ];
 
 // ─────────────────────────────────────────────────────────────
 // Buat jurnal pencairan pinjaman.
 //
-//   Dr Piutang Pokok (per kategori)    Cr Kas Bank (1102)         = total pokok
-//   Dr Piutang Jasa/Bunga (1104)       Cr Pendapatan Jasa/Bunga (4110) = total jasa
+//   Dr Piutang Pokok (per kategori)    Cr Bank (1210)                   = total pokok
+//   Dr Piutang Jasa/Bunga (1311)       Cr Pendapatan Jasa Pinjaman (5110) = total jasa
 //
 // Dipanggil SEKALI saat pinjaman disetujui (bukan tiap bulan — beda dengan
 // buildJurnalForPotongan di PotonganGajiController yang jalan tiap cicilan).
@@ -90,17 +103,17 @@ async function buildJurnalPencairanPinjaman(pinjaman, anggotaNama, userId, t) {
 
   // ── Validasi SEMUA akun dulu sebelum membuat apa pun, biar tidak ada
   // jurnal setengah jadi kalau ada kode akun yang belum ada di master ──
-  const akunKas = await Akun.findOne({ where: { kode_akun: "1102" }, transaction: t });
+  const akunKas = await Akun.findOne({ where: { kode_akun: KODE_AKUN_KAS }, transaction: t });
   if (totalPokok > 0 && !akunKas) {
-    throw new Error("Akun Kas Bank (kode 1102) tidak ditemukan. Jurnal pencairan dibatalkan.");
+    throw new Error(`Akun Kas (kode ${KODE_AKUN_KAS}) tidak ditemukan. Jurnal pencairan dibatalkan.`);
   }
 
   let akunPendapatanJasa = null;
   if (totalJasa > 0) {
-    akunPendapatanJasa = await Akun.findOne({ where: { kode_akun: "4110" }, transaction: t });
+    akunPendapatanJasa = await Akun.findOne({ where: { kode_akun: KODE_AKUN_PENDAPATAN_JASA }, transaction: t });
     if (!akunPendapatanJasa) {
       throw new Error(
-        "Akun Pendapatan Jasa/Bunga (kode 4110) tidak ditemukan. Jurnal pencairan dibatalkan."
+        `Akun Pendapatan Jasa Pinjaman (kode ${KODE_AKUN_PENDAPATAN_JASA}) tidak ditemukan. Jurnal pencairan dibatalkan.`
       );
     }
   }
@@ -124,7 +137,7 @@ async function buildJurnalPencairanPinjaman(pinjaman, anggotaNama, userId, t) {
         uraian_transaksi: "Pencairan Pinjaman",
         label: "Pencairan Pinjaman",
         akun_debet: "Beragam (lihat rincian jurnal)",
-        akun_kredit: "Beragam (Kas Bank / Pendapatan Jasa)",
+        akun_kredit: "Beragam (Bank / Pendapatan Jasa Pinjaman)",
       },
       { transaction: t }
     );
@@ -152,7 +165,7 @@ async function buildJurnalPencairanPinjaman(pinjaman, anggotaNama, userId, t) {
     { transaction: t }
   );
 
-  // Kredit Kas Bank sebesar total pokok yang benar-benar dicairkan
+  // Kredit Bank sebesar total pokok yang benar-benar dicairkan
   if (totalPokok > 0) {
     await Jurnal.create(
       {
@@ -167,7 +180,7 @@ async function buildJurnalPencairanPinjaman(pinjaman, anggotaNama, userId, t) {
     );
   }
 
-  // Kredit Pendapatan Jasa/Bunga sebesar total jasa (diakui di muka, akrual)
+  // Kredit Pendapatan Jasa Pinjaman sebesar total jasa (diakui di muka, akrual)
   if (totalJasa > 0) {
     await Jurnal.create(
       {
