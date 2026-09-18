@@ -1408,7 +1408,7 @@ exports.exportPdf = async (req, res) => {
         x += colWidths[i];
       }
 
-      doc.fillColor("#000").fontSize(8).font("Helvetica-Bold");
+      doc.fillColor("#000").fontSize(7).font("Helvetica-Bold");
       x = startX;
       const labelWidth =
         colWidths[0] + colWidths[1] + colWidths[2] + colWidths[3] + colWidths[4] + colWidths[5];
