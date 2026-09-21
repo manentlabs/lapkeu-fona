@@ -60,6 +60,25 @@ function getBulanSebelumnya(bulan, tahun) {
   return { bulan: BULAN_LIST[idx - 1], tahun: tahunNum };
 }
 
+// ─── Helper: kondisi `where` untuk filter tabel Anggota ─────
+// Dipakai bersama oleh index, summary, exportExcel & exportPdf supaya
+// filter "instansi" (exact match) dan "anggota" (pencarian sebagian pada
+// nama ATAU no. anggota, dari AnggotaFilterAutocomplete di frontend) selalu
+// konsisten dan tidak saling menimpa saat keduanya dipakai bersamaan.
+// Return `null` kalau tidak ada filter sama sekali, supaya pemanggil bisa
+// tahu apakah perlu meng-JOIN/where ke Anggota atau tidak.
+function buildAnggotaFilterWhere(instansi, anggota) {
+  const cond = {};
+  if (instansi) cond.instansi = instansi;
+  if (anggota) {
+    cond[Op.or] = [
+      { nama: { [Op.like]: `%${anggota}%` } },
+      { no_anggota: { [Op.like]: `%${anggota}%` } },
+    ];
+  }
+  return Object.keys(cond).length > 0 ? cond : null;
+}
+
 // ─── Helper: generate no transaksi ──────────────────────────
 async function generateNoTransaksi(t) {
   const now = new Date();
@@ -76,10 +95,10 @@ async function generateNoTransaksi(t) {
   return `POT-${ymd}-${Date.now()}`;
 }
 
-// ─── Index (dengan filter instansi) ─────────────────────────
+// ─── Index (dengan filter instansi & anggota) ───────────────
 exports.index = async (req, res) => {
   try {
-    const { bulan, tahun, instansi, is_processed, page = 1, per_page = 10 } = req.query;
+    const { bulan, tahun, instansi, anggota, is_processed, page = 1, per_page = 10 } = req.query;
 
     const where = {};
     if (bulan) where.bulan = bulan;
@@ -99,8 +118,13 @@ exports.index = async (req, res) => {
       attributes: ["id", "no_anggota", "nama", "instansi"],
     }];
 
-    if (instansi) {
-      include[0].where = { instansi };
+    // 🆕 Filter anggota: pencarian sebagian nama / no. anggota, dikirim dari
+    // AnggotaFilterAutocomplete di panel Filter frontend. Digabung dengan
+    // "instansi" (kalau ada) lewat buildAnggotaFilterWhere supaya keduanya
+    // bisa dipakai bersamaan.
+    const anggotaWhere = buildAnggotaFilterWhere(instansi, anggota);
+    if (anggotaWhere) {
+      include[0].where = anggotaWhere;
     }
 
     const { rows, count } = await PotonganGaji.findAndCountAll({
@@ -111,7 +135,7 @@ exports.index = async (req, res) => {
       offset: (parseInt(page) - 1) * parseInt(per_page),
     });
 
-    // Ringkasan per bulan (dengan filter instansi)
+    // Ringkasan per bulan (dengan filter instansi & anggota)
     const summaryWhere = {};
     if (bulan) summaryWhere.bulan = bulan;
     if (tahun) summaryWhere.tahun = tahun;
@@ -119,16 +143,16 @@ exports.index = async (req, res) => {
       summaryWhere.is_processed = where.is_processed;
     }
 
-    // Untuk summary, perlu join dengan anggota untuk filter instansi.
+    // Untuk summary, perlu join dengan anggota untuk filter instansi/anggota.
     // CATATAN: sengaja TIDAK membatasi status:"aktif" di sini, supaya
     // konsisten dengan query `rows` di atas yang juga tidak membatasi
     // status anggota -- kalau tidak, total di kartu ringkasan bulanan
     // bisa berbeda dari total yang sebenarnya tampil di tabel ketika ada
     // potongan milik anggota yang sudah nonaktif.
     let summary = [];
-    if (instansi) {
+    if (anggotaWhere) {
       const anggotaIds = await Anggota.findAll({
-        where: { instansi },
+        where: anggotaWhere,
         attributes: ["id"],
         raw: true,
       });
@@ -1002,7 +1026,7 @@ exports.batchStore = async (req, res) => {
 // ─── Export Excel ─────────────────────────────────────────────
 exports.exportExcel = async (req, res) => {
   try {
-    const { bulan, tahun, instansi } = req.query;
+    const { bulan, tahun, instansi, anggota } = req.query;
     const where = {};
     if (bulan) where.bulan = bulan;
     if (tahun) where.tahun = tahun;
@@ -1012,8 +1036,12 @@ exports.exportExcel = async (req, res) => {
       as: "anggota",
       attributes: ["id", "no_anggota", "nama", "instansi"],
     };
-    if (instansi) {
-      includeAnggota.where = { instansi };
+    // 🆕 Filter anggota (pencarian sebagian nama / no. anggota), sinkron
+    // dengan panel Filter di frontend -- digabung dengan instansi lewat
+    // buildAnggotaFilterWhere supaya keduanya bisa dipakai bersamaan.
+    const anggotaWhere = buildAnggotaFilterWhere(instansi, anggota);
+    if (anggotaWhere) {
+      includeAnggota.where = anggotaWhere;
     }
 
     const data = await PotonganGaji.findAll({
@@ -1110,7 +1138,7 @@ exports.exportExcel = async (req, res) => {
 // ─── Export PDF ──────────────────────────────────────────────
 exports.exportPdf = async (req, res) => {
   try {
-    const { bulan, tahun, instansi } = req.query;
+    const { bulan, tahun, instansi, anggota } = req.query;
     const where = {};
     if (bulan) where.bulan = bulan;
     if (tahun) where.tahun = tahun;
@@ -1120,8 +1148,12 @@ exports.exportPdf = async (req, res) => {
       as: "anggota",
       attributes: ["id", "no_anggota", "nama", "instansi"],
     };
-    if (instansi) {
-      includeAnggota.where = { instansi };
+    // 🆕 Filter anggota (pencarian sebagian nama / no. anggota), sinkron
+    // dengan panel Filter di frontend -- digabung dengan instansi lewat
+    // buildAnggotaFilterWhere supaya keduanya bisa dipakai bersamaan.
+    const anggotaWhere = buildAnggotaFilterWhere(instansi, anggota);
+    if (anggotaWhere) {
+      includeAnggota.where = anggotaWhere;
     }
 
     const data = await PotonganGaji.findAll({
