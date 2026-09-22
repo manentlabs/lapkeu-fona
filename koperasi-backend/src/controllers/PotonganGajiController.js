@@ -98,21 +98,16 @@ async function generateNoTransaksi(t) {
 // ─── Index (dengan filter instansi & anggota) ───────────────
 exports.index = async (req, res) => {
   try {
-    // 🆕 Cegah caching di browser / proxy / CDN. Tanpa ini, request dengan
-    // query string berbeda (mis. ?anggota=Wiwik+S) bisa saja menerima
-    // response 304 dari cache request sebelumnya (yang tanpa filter atau
-    // dengan filter lain), sehingga tabel menampilkan data yang salah
-    // walau request URL di Network tab sudah benar.
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-    res.set("Pragma", "no-cache");
-    res.set("Expires", "0");
-    res.set("Surrogate-Control", "no-store");
-
     const { bulan, tahun, instansi, anggota, is_processed, page = 1, per_page = 10 } = req.query;
 
     const where = {};
     if (bulan) where.bulan = bulan;
     if (tahun) where.tahun = tahun;
+    // 🆕 Filter status proses. Dipakai oleh tab "Pengajuan Potongan" di
+    // halaman Transaksi (frontend) untuk hanya menampilkan baris yang
+    // belum diproses ke jurnal (is_processed=false), tanpa mengubah
+    // perilaku default endpoint ini (kalau param tidak dikirim, semua
+    // status tetap ikut tampil seperti sebelumnya).
     if (is_processed !== undefined) {
       where.is_processed = is_processed === "true" || is_processed === "1" || is_processed === true;
     }
@@ -123,10 +118,13 @@ exports.index = async (req, res) => {
       attributes: ["id", "no_anggota", "nama", "instansi"],
     }];
 
+    // 🆕 Filter anggota: pencarian sebagian nama / no. anggota, dikirim dari
+    // AnggotaFilterAutocomplete di panel Filter frontend. Digabung dengan
+    // "instansi" (kalau ada) lewat buildAnggotaFilterWhere supaya keduanya
+    // bisa dipakai bersamaan.
     const anggotaWhere = buildAnggotaFilterWhere(instansi, anggota);
     if (anggotaWhere) {
       include[0].where = anggotaWhere;
-      include[0].required = true; // 🆕 pastikan JOIN jadi INNER JOIN saat filter aktif
     }
 
     const { rows, count } = await PotonganGaji.findAndCountAll({
@@ -135,9 +133,9 @@ exports.index = async (req, res) => {
       order: [["tahun", "DESC"], ["bulan", "DESC"], ["no_urut", "ASC"]],
       limit: parseInt(per_page),
       offset: (parseInt(page) - 1) * parseInt(per_page),
-      distinct: true, // 🆕 penting saat include punya where — tanpa ini `count` bisa salah hitung kalau ada JOIN yang menggandakan baris
     });
 
+    // Ringkasan per bulan (dengan filter instansi & anggota)
     const summaryWhere = {};
     if (bulan) summaryWhere.bulan = bulan;
     if (tahun) summaryWhere.tahun = tahun;
@@ -145,6 +143,12 @@ exports.index = async (req, res) => {
       summaryWhere.is_processed = where.is_processed;
     }
 
+    // Untuk summary, perlu join dengan anggota untuk filter instansi/anggota.
+    // CATATAN: sengaja TIDAK membatasi status:"aktif" di sini, supaya
+    // konsisten dengan query `rows` di atas yang juga tidak membatasi
+    // status anggota -- kalau tidak, total di kartu ringkasan bulanan
+    // bisa berbeda dari total yang sebenarnya tampil di tabel ketika ada
+    // potongan milik anggota yang sudah nonaktif.
     let summary = [];
     if (anggotaWhere) {
       const anggotaIds = await Anggota.findAll({
