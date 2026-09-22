@@ -25,6 +25,20 @@ const BULAN_LIST = [
 // (src/pages/bendahara/PotonganGajiPage.jsx).
 const DEFAULT_SIMPANAN_WAJIB = 180000;
 
+// 🆕 Header anti-cache untuk semua endpoint GET yang datanya dinamis
+// (dipengaruhi filter query string seperti ?anggota=..., ?bulan=..., dst).
+// Tanpa ini, browser / proxy / CDN di depan API bisa saja menjawab
+// request dengan query string BERBEDA menggunakan response 304 dari
+// cache request sebelumnya -- sehingga hasil di layar tidak sesuai
+// dengan filter yang baru diterapkan, walau Request URL di Network tab
+// sudah benar. Dipanggil di awal setiap handler GET yang relevan.
+function noStore(res) {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  res.set("Surrogate-Control", "no-store");
+}
+
 // ─── Helper format Rupiah ────────────────────────────────────
 function formatRupiah(value) {
   const num = parseFloat(value) || 0;
@@ -98,12 +112,14 @@ async function generateNoTransaksi(t) {
 // ─── Index (dengan filter instansi & anggota) ───────────────
 exports.index = async (req, res) => {
   try {
+    noStore(res); // 🆕 cegah 304 / cache stale saat filter berubah
+
     const { bulan, tahun, instansi, anggota, is_processed, page = 1, per_page = 10 } = req.query;
 
     const where = {};
     if (bulan) where.bulan = bulan;
     if (tahun) where.tahun = tahun;
-    // 🆕 Filter status proses. Dipakai oleh tab "Pengajuan Potongan" di
+    // Filter status proses. Dipakai oleh tab "Pengajuan Potongan" di
     // halaman Transaksi (frontend) untuk hanya menampilkan baris yang
     // belum diproses ke jurnal (is_processed=false), tanpa mengubah
     // perilaku default endpoint ini (kalau param tidak dikirim, semua
@@ -118,13 +134,19 @@ exports.index = async (req, res) => {
       attributes: ["id", "no_anggota", "nama", "instansi"],
     }];
 
-    // 🆕 Filter anggota: pencarian sebagian nama / no. anggota, dikirim dari
+    // Filter anggota: pencarian sebagian nama / no. anggota, dikirim dari
     // AnggotaFilterAutocomplete di panel Filter frontend. Digabung dengan
     // "instansi" (kalau ada) lewat buildAnggotaFilterWhere supaya keduanya
     // bisa dipakai bersamaan.
     const anggotaWhere = buildAnggotaFilterWhere(instansi, anggota);
     if (anggotaWhere) {
       include[0].where = anggotaWhere;
+      // 🆕 Paksa INNER JOIN secara eksplisit. Sequelize biasanya otomatis
+      // mengubah include jadi INNER JOIN begitu ada `where` di include,
+      // tapi menegaskannya di sini menghindari kejutan lintas versi
+      // Sequelize (di versi tertentu tanpa required:true bisa jatuh balik
+      // ke LEFT JOIN dan filter jadi tidak berefek).
+      include[0].required = true;
     }
 
     const { rows, count } = await PotonganGaji.findAndCountAll({
@@ -133,6 +155,11 @@ exports.index = async (req, res) => {
       order: [["tahun", "DESC"], ["bulan", "DESC"], ["no_urut", "ASC"]],
       limit: parseInt(per_page),
       offset: (parseInt(page) - 1) * parseInt(per_page),
+      // 🆕 Wajib saat include punya where/JOIN: tanpa distinct, `count`
+      // bisa dihitung dari hasil JOIN mentah (berpotensi salah kalau ada
+      // relasi yang menggandakan baris), sehingga total & total_pages di
+      // pagination meleset dari jumlah baris PotonganGaji yang sebenarnya.
+      distinct: true,
     });
 
     // Ringkasan per bulan (dengan filter instansi & anggota)
@@ -619,14 +646,6 @@ exports.processAll = async (req, res) => {
 exports.generatePinjamanBulanIni = async (req, res) => {
   try {
     const now = new Date();
-    // FIX: sebelumnya pakai `now.toLocaleString("id-ID", { month: "long" })`,
-    // yang hasilnya bergantung pada dukungan ICU penuh di runtime Node
-    // server. Kalau Node di-build dengan small-icu (umum di image Docker
-    // default), ini bisa menghasilkan nama bulan berbahasa Inggris atau
-    // format lain yang tidak match dengan BULAN_LIST -- akibatnya baris
-    // yang tergenerate di sini tidak match dengan `where: { bulan, tahun }`
-    // di endpoint lain (index, getAnggotaByInstansi, dst). Pakai BULAN_LIST
-    // yang sama seperti frontend supaya selalu konsisten.
     const bulan = BULAN_LIST[now.getMonth()];
     const tahun = now.getFullYear();
 
@@ -655,18 +674,6 @@ exports.generatePinjamanBulanIni = async (req, res) => {
         const maxUrut = await PotonganGaji.max("no_urut", { where: { bulan, tahun } });
         const angsuranKe = (pinjaman.angsuran_ke || 0) + 1;
 
-        // ── FIX: hitung ulang cicilan Uang Menengah dari plafon &
-        // jangka_waktu memakai util yang sama dengan PinjamanController,
-        // BUKAN sekadar copy pinjaman.utang_uang_menengah_pokok/jasa.
-        //
-        // Alasan: field itu pada pinjaman lama (dibuat sebelum rumus ini
-        // ada / sempat diedit manual di DB) bisa tidak akurat atau kosong.
-        // Kalau dibiarkan copy-paste, cicilan bulanan yang tergenerate di
-        // sini akan salah terus tiap bulan mengikuti kesalahan awal.
-        // Menghitung ulang dari plafon+jangka_waktu setiap kali generate
-        // menjamin baris cicilan selalu konsisten dengan rumus resmi:
-        //   Pokok = plafon / jangka_waktu
-        //   Jasa  = 2,75% x plafon
         const { pokok: uangMenengahPokok, jasa: uangMenengahJasa } =
           hitungAngsuranUangMenengah(pinjaman.plafon, pinjaman.jangka_waktu);
 
@@ -761,14 +768,12 @@ const FIELD_LABELS = {
   utang_uang_pendek_jasa: "Utang Uang Pendek Jasa",
 };
 
-// Field cicilan uang menengah yang bisa muncul sebagai pratinjau otomatis
-// dari pinjaman aktif anggota (lihat pinjaman_preview di getAnggotaByInstansi).
-// Harus sinkron dengan PINJAMAN_PREVIEW_FIELDS di frontend.
 const PINJAMAN_PREVIEW_FIELDS = ["utang_uang_menengah_pokok", "utang_uang_menengah_jasa"];
 
 // ─── Daftar instansi aktif ──────────────────────────────────
 exports.listInstansi = async (req, res) => {
   try {
+    noStore(res); // 🆕
     const rows = await Anggota.findAll({
       attributes: [[sequelize.fn("DISTINCT", sequelize.col("instansi")), "instansi"]],
       where: { instansi: { [Op.ne]: null, [Op.ne]: "" }, status: "aktif" },
@@ -783,19 +788,9 @@ exports.listInstansi = async (req, res) => {
 };
 
 // ─── Get Anggota by Instansi ────────────────────────────────
-// Mengembalikan daftar anggota aktif di sebuah instansi untuk bulan/tahun
-// tertentu, lengkap dengan nilai yang sudah pernah diisi (kalau ada) DAN
-// nilai default yang siap dipakai modal Input per Instansi di frontend:
-//   - default_simpanan_wajib   : nominal simpanan wajib standar
-//   - default_simpanan_sukarela: nilai simpanan sukarela anggota di bulan
-//                                 sebelumnya (kalau ada), supaya bendahara
-//                                 tidak perlu isi ulang tiap bulan
-//   - pinjaman_preview          : true kalau utang_uang_menengah_* di baris
-//                                 ini adalah pratinjau cicilan dari pinjaman
-//                                 aktif anggota (belum digenerate resmi lewat
-//                                 generatePinjamanBulanIni untuk bulan ini)
 exports.getAnggotaByInstansi = async (req, res) => {
   try {
+    noStore(res); // 🆕
     const { instansi, bulan, tahun } = req.query;
     if (!instansi || !bulan || !tahun) {
       return res.status(422).json({ message: "Instansi, bulan, dan tahun wajib diisi." });
@@ -813,7 +808,6 @@ exports.getAnggotaByInstansi = async (req, res) => {
 
     const anggotaIds = anggotaList.map((a) => a.id);
 
-    // Baris yang sudah ada untuk bulan/tahun yang dipilih
     const existingRows = await PotonganGaji.findAll({
       where: { anggota_id: anggotaIds, bulan, tahun },
     });
@@ -822,7 +816,6 @@ exports.getAnggotaByInstansi = async (req, res) => {
       existingMap[p.anggota_id] = p;
     });
 
-    // Simpanan sukarela bulan sebelumnya, dipakai sebagai default
     const { bulan: bulanLalu, tahun: tahunLalu } = getBulanSebelumnya(bulan, tahun);
     let simpananSukarelaLaluMap = {};
     if (bulanLalu && tahunLalu) {
@@ -836,11 +829,6 @@ exports.getAnggotaByInstansi = async (req, res) => {
       });
     }
 
-    // Pinjaman aktif bermetode potong-gaji, untuk pratinjau cicilan Uang
-    // Menengah. Kalau anggota tidak punya baris potongan untuk bulan ini
-    // sama sekali (belum pernah digenerate), tunjukkan pratinjau supaya
-    // bendahara tahu ada cicilan yang akan otomatis muncul lewat menu
-    // "Generate Potongan Pinjaman", tanpa perlu isi manual di sini.
     const pinjamanAktifList = await Pinjaman.findAll({
       where: {
         anggota_id: anggotaIds,
@@ -851,11 +839,6 @@ exports.getAnggotaByInstansi = async (req, res) => {
     });
     const pinjamanMap = {};
     pinjamanAktifList.forEach((pj) => {
-      // Kalau anggota punya lebih dari satu pinjaman aktif, pratinjau di
-      // sini cukup pakai satu (yang pertama ditemukan) sebagai indikator
-      // "ada cicilan otomatis". Baris resmi untuk SEMUA pinjaman aktif
-      // tetap dibuat satu per satu lewat generatePinjamanBulanIni,
-      // sehingga sisa_angsuran masing-masing pinjaman tetap sinkron.
       if (!pinjamanMap[pj.anggota_id]) pinjamanMap[pj.anggota_id] = pj;
     });
 
@@ -882,11 +865,6 @@ exports.getAnggotaByInstansi = async (req, res) => {
         row[f] = p ? parseFloat(p[f]) || 0 : 0;
       });
 
-      // Hanya isi default & pratinjau kalau belum ada baris apa pun untuk
-      // anggota ini di bulan/tahun tersebut. Kalau sudah ada baris
-      // (manual atau pinjaman), nilai yang tersimpan itu yang jadi acuan
-      // -- jangan ditimpa default supaya data yang sudah diinput/diproses
-      // tidak berubah diam-diam.
       if (!p) {
         row.simpanan_wajib = defaultSimpananWajib;
         row.simpanan_sukarela = defaultSimpananSukarela;
@@ -948,7 +926,6 @@ exports.batchStore = async (req, res) => {
       });
 
       if (existing) {
-        // Baris yang SUDAH diproses ke jurnal tetap terkunci total.
         if (existing.is_processed) {
           skipped++;
           continue;
@@ -961,7 +938,6 @@ exports.batchStore = async (req, res) => {
           };
           FIELDS_POTONGAN.forEach((f) => {
             if (PINJAMAN_PREVIEW_FIELDS.includes(f)) {
-              // abaikan nilai kiriman untuk 2 field ini, pertahankan nilai asli
               updates[f] = parseFloat(existing[f]) || 0;
             } else {
               updates[f] = parseFloat(row[f]) || 0;
@@ -974,7 +950,6 @@ exports.batchStore = async (req, res) => {
           continue;
         }
 
-        // Baris manual biasa -- update seperti semula.
         const updates = {
           keterangan: row.keterangan || existing.keterangan,
           metode_potongan: row.metode_potongan || {},
@@ -1036,12 +1011,10 @@ exports.exportExcel = async (req, res) => {
       as: "anggota",
       attributes: ["id", "no_anggota", "nama", "instansi"],
     };
-    // 🆕 Filter anggota (pencarian sebagian nama / no. anggota), sinkron
-    // dengan panel Filter di frontend -- digabung dengan instansi lewat
-    // buildAnggotaFilterWhere supaya keduanya bisa dipakai bersamaan.
     const anggotaWhere = buildAnggotaFilterWhere(instansi, anggota);
     if (anggotaWhere) {
       includeAnggota.where = anggotaWhere;
+      includeAnggota.required = true;
     }
 
     const data = await PotonganGaji.findAll({
@@ -1054,7 +1027,6 @@ exports.exportExcel = async (req, res) => {
       return res.status(422).json({ message: "Tidak ada data potongan untuk diekspor." });
     }
 
-    const ExcelJS = require("exceljs");
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Potongan Gaji");
 
@@ -1148,12 +1120,10 @@ exports.exportPdf = async (req, res) => {
       as: "anggota",
       attributes: ["id", "no_anggota", "nama", "instansi"],
     };
-    // 🆕 Filter anggota (pencarian sebagian nama / no. anggota), sinkron
-    // dengan panel Filter di frontend -- digabung dengan instansi lewat
-    // buildAnggotaFilterWhere supaya keduanya bisa dipakai bersamaan.
     const anggotaWhere = buildAnggotaFilterWhere(instansi, anggota);
     if (anggotaWhere) {
       includeAnggota.where = anggotaWhere;
+      includeAnggota.required = true;
     }
 
     const data = await PotonganGaji.findAll({
@@ -1168,12 +1138,6 @@ exports.exportPdf = async (req, res) => {
 
     const pengaturan = await PengaturanWebsite.findOne();
 
-    // ── Field config ──
-    // FIX: kolom "waserba" dihapus. Field ini tidak ada di model
-    // PotonganGaji maupun FIELDS_POTONGAN -- item.waserba selalu
-    // undefined, jadi kolomnya di PDF selalu kosong. Kalau nanti memang
-    // dibutuhkan, tambahkan dulu kolomnya di model & alur input sebelum
-    // dimasukkan lagi ke sini.
     const fieldKeys = [
       "simpanan_wajib",
       "simpanan_sukarela",
@@ -1186,7 +1150,6 @@ exports.exportPdf = async (req, res) => {
       "simpanan_pokok",
     ];
 
-    // ── Tentukan judul periode (fallback jika query bulan/tahun kosong) ──
     const bulanTahunSet = new Set(data.map((d) => `${d.bulan}|${d.tahun}`));
     const isSinglePeriode = bulanTahunSet.size === 1;
     let judulPeriode;
@@ -1199,7 +1162,6 @@ exports.exportPdf = async (req, res) => {
       judulPeriode = "REKAP POTONGAN GAJI (SEMUA PERIODE)";
     }
 
-    // ── Kelompokkan data per instansi ──
     const groupsMap = new Map();
     data.forEach((item) => {
       const namaInstansi = item.anggota?.instansi || "Tanpa Instansi";
@@ -1208,7 +1170,6 @@ exports.exportPdf = async (req, res) => {
     });
     const groups = [...groupsMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
-    // ── Buat PDF (A4 Landscape) ──
     const doc = new PDFDocument({ margin: 20, size: "A4", layout: "landscape" });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=potongan-gaji-${Date.now()}.pdf`);
@@ -1221,7 +1182,6 @@ exports.exportPdf = async (req, res) => {
     const startX = marginX;
     const bottomLimit = pageHeight - 40;
 
-    // ── Resolusi path logo ──
     const logoPath = pengaturan?.logo_koperasi
       ? path.join(__dirname, "../../public/uploads/pengaturan", pengaturan.logo_koperasi)
       : null;
@@ -1229,7 +1189,6 @@ exports.exportPdf = async (req, res) => {
 
     const namaKoperasi = pengaturan?.nama_koperasi || "KOPERASI KONSUMEN MITRA HUSADA SEJAHTERA";
 
-    // ── Fungsi gambar kop surat + judul + nama instansi, return Y setelah kop ──
     const drawKopAndTitle = (namaInstansi) => {
       let y = 20;
       let logoLoaded = false;
@@ -1285,59 +1244,27 @@ exports.exportPdf = async (req, res) => {
       return y;
     };
 
-    // ── Lebar kolom (total ≈ 736, muat dalam contentWidth ≈ 801.89) ──
     const colWidths = [
-      42,  // No Anggota
-      32,  // No Urut
-      120, // Nama
-      50,  // Plafon
-      26,  // JW
-      20,  // Ke
-      44,  // Simp. Wajib
-      44,  // Simp. Sukarela
-      44,  // Utang Brg. Pokok
-      42,  // Utang Brg. Jasa
-      48,  // Utang Uang Menengah Pokok
-      50,  // Utang Uang Menengah Jasa 2,75%
-      48,  // Utang Uang Pendek Pokok
-      50,  // Utang Uang Pendek Jasa 2,75%
-      42,  // Simp. Pokok
-      54,  // Jumlah
+      42, 32, 120, 50, 26, 20, 44, 44, 44, 42, 48, 50, 48, 50, 42, 54,
     ];
 
     const headers = [
-      "No.\nAnggota",
-      "No.\nUrut",
-      "Nama",
-      "Plafon",
-      "JW",
-      "Ke",
-      "Simp.\nWajib",
-      "Simp.\nSukarela",
-      "Utang Brg.\nPokok",
-      "Utang Brg.\nJasa",
-      "Utang Uang\nMenengah\nPokok",
-      "Utang Uang\nMenengah\nJasa 2,75%",
-      "Utang Uang\nPendek\nPokok",
-      "Utang Uang\nPendek\nJasa 2,75%",
-      "Simp.\nPokok",
-      "Jumlah",
+      "No.\nAnggota", "No.\nUrut", "Nama", "Plafon", "JW", "Ke",
+      "Simp.\nWajib", "Simp.\nSukarela", "Utang Brg.\nPokok", "Utang Brg.\nJasa",
+      "Utang Uang\nMenengah\nPokok", "Utang Uang\nMenengah\nJasa 2,75%",
+      "Utang Uang\nPendek\nPokok", "Utang Uang\nPendek\nJasa 2,75%",
+      "Simp.\nPokok", "Jumlah",
     ];
 
     const HEADER_H = 34;
     const ROW_H = 18;
     const HEADER_FONT = 7;
     const BODY_FONT = 7.5;
-    const BORDER_COLOR = "#000000"; // garis pemisah tegas, cell putih polos
+    const BORDER_COLOR = "#000000";
 
     const drawHeader = (y) => {
       let x = startX;
       for (let i = 0; i < headers.length; i++) {
-        // Cell putih saja, garis pemisah hitam.
-        // PENTING: pakai fillAndStroke(), BUKAN fill() lalu stroke() terpisah.
-        // .fill() menutup/mengonsumsi path saat itu juga, sehingga .stroke()
-        // setelahnya tidak punya path lagi untuk digambar — itu sebabnya
-        // sebelumnya cell terisi warna tapi garis tabelnya tidak pernah muncul.
         doc.lineWidth(0.75).rect(x, y, colWidths[i], HEADER_H).fillAndStroke("#ffffff", BORDER_COLOR);
         doc
           .fillColor("#000")
@@ -1352,7 +1279,6 @@ exports.exportPdf = async (req, res) => {
       return y + HEADER_H;
     };
 
-    // ── Loop tiap instansi → halaman baru per instansi ──
     groups.forEach(([namaInstansi, rows], groupIdx) => {
       if (groupIdx > 0) {
         doc.addPage({ size: "A4", margin: 20, layout: "landscape" });
@@ -1375,9 +1301,6 @@ exports.exportPdf = async (req, res) => {
         const y = rowY;
         let x = startX;
 
-        // Semua baris: fill putih, garis pemisah hitam — tanpa selang-seling warna.
-        // fillAndStroke() dipakai supaya garis benar-benar tergambar (lihat
-        // catatan di drawHeader di atas soal kenapa fill()+stroke() terpisah gagal).
         for (let i = 0; i < colWidths.length; i++) {
           doc.lineWidth(0.75).rect(x, y, colWidths[i], ROW_H).fillAndStroke("#ffffff", BORDER_COLOR);
           x += colWidths[i];
@@ -1391,10 +1314,6 @@ exports.exportPdf = async (req, res) => {
           x += colWidths[i];
         };
 
-        // Tanda (*) menandai komponen yang dipotong dari Tukin (bukan
-        // Gaji), sesuai catatan di panel Export frontend. Dibaca dari
-        // metode_potongan (field virtual di model, alias kolom
-        // sumber_field) -- default "gaji" kalau field tidak ada di peta.
         const metodeItem = item.metode_potongan || {};
         const isTukin = (field) => metodeItem[field] === "tukin";
         const valWithMark = (field, val) => {
@@ -1419,12 +1338,11 @@ exports.exportPdf = async (req, res) => {
         subtotalGrand += parseFloat(item.total) || 0;
 
         doc.font("Helvetica-Bold");
-        cellText(formatRupiah(item.total), 15, "right"); // kolom Jumlah = index terakhir
+        cellText(formatRupiah(item.total), 15, "right");
 
         rowY += ROW_H;
       });
 
-      // ── Baris Subtotal Instansi ──
       if (rowY + ROW_H + 4 > bottomLimit) {
         doc.addPage({ size: "A4", margin: 20, layout: "landscape" });
         rowY = 20;
