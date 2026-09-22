@@ -78,9 +78,35 @@ exports.index = async (req, res) => {
     const totalPiutangAktif = (await Pinjaman.sum("plafon", { where: { status: "aktif" } })) || 0;
 
     // ---------- 4. Data Simpanan (dari akun) ----------
-    const simpananPokok = saldoAkun.find((row) => row.kode_akun === "3110");
-    const simpananWajib = saldoAkun.find((row) => row.kode_akun === "3120");
-    const simpananSukarela = saldoAkun.find((row) => row.kode_akun === "2101");
+    // 🔧 PERBAIKAN: pencarian akun sebelumnya pakai strict equality
+    // (row.kode_akun === "3110") yang gagal kalau kode_akun tersimpan
+    // sebagai number (bukan string) di database, atau ada spasi/format
+    // beda. Sekarang dibuat lebih toleran:
+    //   1. Bandingkan kode_akun sebagai string yang sudah di-trim.
+    //   2. Kalau tidak ketemu lewat kode, coba fallback cari lewat
+    //      nama_akun (mengandung kata kuncinya).
+    //   3. Kalau tetap tidak ketemu, log peringatan supaya kelihatan
+    //      di server log bahwa kode akun perlu disesuaikan.
+    const cariAkun = (kodeAkun, kataKunciNama) => {
+      let found = saldoAkun.find(
+        (row) => String(row.kode_akun).trim() === kodeAkun
+      );
+      if (!found && kataKunciNama) {
+        found = saldoAkun.find((row) =>
+          (row.nama_akun || "").toLowerCase().includes(kataKunciNama.toLowerCase())
+        );
+      }
+      if (!found) {
+        console.warn(
+          `[Dashboard Bendahara] Akun dengan kode "${kodeAkun}" (atau nama mengandung "${kataKunciNama}") tidak ditemukan di tabel akun. Cek kembali kode_akun / nama_akun di database.`
+        );
+      }
+      return found;
+    };
+
+    const simpananPokok = cariAkun("3110", "simpanan pokok");
+    const simpananWajib = cariAkun("3120", "simpanan wajib");
+    const simpananSukarela = cariAkun("2101", "simpanan sukarela");
 
     const totalSimpananPokok = simpananPokok ? hitungSaldo(simpananPokok) : 0;
     const totalSimpananWajib = simpananWajib ? hitungSaldo(simpananWajib) : 0;
